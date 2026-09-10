@@ -5,12 +5,23 @@ from src.debate.personas import (
     get_persona,
     infer_contrarian_thesis,
     list_scenarios,
+    list_persona_tones,
     PERSONAS,
+    PERSONA_TONES,
 )
 
 
 def test_standard_personas_exist():
-    for scenario_id in ["vc_pitch", "salary_negotiation", "hostile_cross_exam"]:
+    expected_scenarios = [
+        "vc_pitch",
+        "salary_negotiation",
+        "hostile_cross_exam",
+        "senior_interview",
+        "sales_objections",
+        "media_crisis",
+        "hostile_boardroom",
+    ]
+    for scenario_id in expected_scenarios:
         persona = get_persona(scenario_id)
         assert persona.id == scenario_id
         assert len(persona.name) > 0
@@ -21,6 +32,27 @@ def test_standard_personas_exist():
         assert "NEVER polite" in persona.system_prompt
         assert "END WITH A TRAP" in persona.system_prompt
         assert "under 25 words" in persona.system_prompt
+
+
+def test_persona_tone_modifiers():
+    assert len(PERSONA_TONES) == 5
+    tones = list_persona_tones()
+    assert len(tones) == 5
+    tone_ids = [t["id"] for t in tones]
+    assert "calm_ruthless" in tone_ids
+    assert "skeptical_vc" in tone_ids
+    assert "courtroom_aggressive" in tone_ids
+    assert "cold_negotiator" in tone_ids
+    assert "smiling_assassin" in tone_ids
+
+    # Test tone injection in prompt
+    p_ruthless = get_persona("vc_pitch", persona_tone="calm_ruthless")
+    assert "TONE DIRECTIVE (CALM RUTHLESS)" in p_ruthless.system_prompt
+    assert p_ruthless.speaker == "alpine"
+
+    p_assassin = get_persona("hostile_boardroom", persona_tone="smiling_assassin")
+    assert "TONE DIRECTIVE (SMILING ASSASSIN)" in p_assassin.system_prompt
+    assert p_assassin.speaker == "astra"
 
 
 def test_custom_debate_persona():
@@ -62,9 +94,14 @@ def test_pressure_directive_scaling():
 
 def test_list_scenarios():
     scenarios = list_scenarios()
-    assert len(scenarios) >= 4
+    assert len(scenarios) == 8
     scenario_ids = [s["id"] for s in scenarios]
     assert "vc_pitch" in scenario_ids
     assert "salary_negotiation" in scenario_ids
     assert "hostile_cross_exam" in scenario_ids
+    assert "senior_interview" in scenario_ids
+    assert "sales_objections" in scenario_ids
+    assert "media_crisis" in scenario_ids
+    assert "hostile_boardroom" in scenario_ids
     assert "custom_debate" in scenario_ids
+

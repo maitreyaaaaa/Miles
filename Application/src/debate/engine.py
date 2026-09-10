@@ -23,11 +23,13 @@ class DebateEngine:
         difficulty: str = "hard",
         session_id: Optional[str] = None,
         llm_client: Optional[LLMClient] = None,
+        persona_tone: Optional[str] = None,
     ):
         self.session_id: str = session_id or str(uuid.uuid4())
         self.scenario_id: str = scenario_id
         self.topic: Optional[str] = topic
         self.difficulty: str = difficulty.lower()
+        self.persona_tone: Optional[str] = persona_tone
 
         # Initial pressure based on difficulty
         initial_pressure = {
@@ -38,7 +40,12 @@ class DebateEngine:
         }.get(self.difficulty, 3)
 
         self.pressure_level: int = initial_pressure
-        self.persona: Persona = get_persona(scenario_id, topic=topic, pressure_level=self.pressure_level)
+        self.persona: Persona = get_persona(
+            scenario_id,
+            topic=topic,
+            pressure_level=self.pressure_level,
+            persona_tone=self.persona_tone,
+        )
         self.llm_client: LLMClient = llm_client or LLMClient()
         self.scorer: ComposureScorer = ComposureScorer(initial_score=85)
 
@@ -127,6 +134,7 @@ class DebateEngine:
             self.scenario_id,
             topic=self.topic,
             pressure_level=self.pressure_level,
+            persona_tone=self.persona_tone,
         )
 
     def record_user_turn(

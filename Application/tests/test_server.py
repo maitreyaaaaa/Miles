@@ -35,7 +35,18 @@ def test_scenarios_endpoint():
     data = response.json()
     assert "scenarios" in data
     assert "difficulties" in data
-    assert len(data["scenarios"]) >= 4
+    assert "persona_tones" in data
+    assert len(data["scenarios"]) == 8
+    assert len(data["persona_tones"]) == 5
+
+
+def test_persona_tones_endpoint():
+    response = client.get("/api/personas/tones")
+    assert response.status_code == 200
+    data = response.json()
+    assert "tones" in data
+    assert len(data["tones"]) == 5
+
 
 
 def test_custom_scenario_endpoint():

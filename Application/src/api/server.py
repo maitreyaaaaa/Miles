@@ -21,6 +21,7 @@ from src.debate.personas import (
     get_persona,
     infer_contrarian_thesis,
     list_scenarios,
+    list_persona_tones,
 )
 from src.debate.dossier import generate_fallback_dossier
 from src.voice.assemblyai_stream import AssemblyAIStreamingClient, SCENARIO_VOCABULARY
@@ -148,7 +149,14 @@ async def get_scenarios():
     return {
         "scenarios": list_scenarios(),
         "difficulties": ["easy", "medium", "hard", "ruthless"],
+        "persona_tones": list_persona_tones(),
     }
+
+
+@app.get("/api/personas/tones")
+async def get_persona_tones():
+    """Retrieve available persona tone modifiers."""
+    return {"tones": list_persona_tones()}
 
 
 @app.post("/api/scenarios/custom")
@@ -184,6 +192,7 @@ async def websocket_debate(
     scenario: str = Query("vc_pitch"),
     topic: Optional[str] = Query(None),
     difficulty: str = Query("hard"),
+    persona_tone: Optional[str] = Query(None),
     audio_format: str = Query("binary"),
 ):
     """Full-Duplex live audio & telemetry stream for Miles."""
@@ -194,6 +203,7 @@ async def websocket_debate(
         scenario_id=scenario,
         topic=topic,
         difficulty=difficulty,
+        persona_tone=persona_tone,
     )
     SESSIONS[engine.session_id] = engine
 

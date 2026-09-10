@@ -11,6 +11,7 @@ import type {
   DebateReportEvent,
   Difficulty,
   InterruptionEvent,
+  PersonaTone,
   ScenarioId,
   ServerEvent,
   SpeechIntelligenceEvent,
@@ -20,31 +21,71 @@ import type {
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL ?? "http://localhost:8000";
 
-const scenarios: { id: ScenarioId; label: string; opponent: string; topic: string }[] = [
+const scenarios: { id: ScenarioId; label: string; opponent: string; topic: string; tag: string }[] = [
   {
     id: "vc_pitch",
-    label: "VC pitch",
+    label: "VC Pitch",
     opponent: "Marcus Vance",
     topic: "Defend your startup's market, moat, and unit economics.",
+    tag: "Startups",
   },
   {
     id: "salary_negotiation",
-    label: "Salary negotiation",
+    label: "Salary Negotiation",
     opponent: "Elena Rostova",
     topic: "Negotiate compensation against a hardball VP of Talent.",
+    tag: "Career",
   },
   {
     id: "hostile_cross_exam",
-    label: "Cross-examination",
+    label: "Cross-Examination",
     opponent: "DA Carter",
     topic: "Survive a courtroom-style attack on your consistency.",
+    tag: "Legal",
+  },
+  {
+    id: "senior_interview",
+    label: "Systems Architecture",
+    opponent: "David Chen",
+    topic: "Defend distributed consensus and scale tradeoffs under scrutiny.",
+    tag: "Engineering",
+  },
+  {
+    id: "sales_objections",
+    label: "Enterprise Sales",
+    opponent: "Victoria Vance",
+    topic: "Overcome procurement pushback, ROI skepticism, and contract risk.",
+    tag: "Sales",
+  },
+  {
+    id: "media_crisis",
+    label: "Media Crisis",
+    opponent: "Sarah Jenkins",
+    topic: "Handle hostile investigative questioning on an executive leak.",
+    tag: "PR",
+  },
+  {
+    id: "hostile_boardroom",
+    label: "Activist Boardroom",
+    opponent: "Arthur Sterling",
+    topic: "Defend operating margins and strategy against activist investors.",
+    tag: "Leadership",
   },
   {
     id: "custom_debate",
-    label: "Custom topic",
-    opponent: "Contrarian",
-    topic: "Write any position and argue it under pressure.",
+    label: "Custom Topic",
+    opponent: "The Contrarian",
+    topic: "Write any position and argue it under relentless counter-pressure.",
+    tag: "Freeform",
   },
+];
+
+const personaTones: { id: PersonaTone; label: string; desc: string }[] = [
+  { id: "calm_ruthless", label: "Calm Ruthless", desc: "Icy clinical precision" },
+  { id: "skeptical_vc", label: "Skeptical VC", desc: "Impatient & numbers-obsessed" },
+  { id: "courtroom_aggressive", label: "Courtroom Aggressive", desc: "Rapid-fire cross-exam" },
+  { id: "cold_negotiator", label: "Cold Negotiator", desc: "Immovable & low anchoring" },
+  { id: "smiling_assassin", label: "Smiling Assassin", desc: "Polite with lethal traps" },
 ];
 
 const difficulties: Difficulty[] = ["easy", "medium", "hard", "ruthless"];
@@ -79,13 +120,19 @@ const initialTelemetry: TelemetryEvent = {
   pressure_level: 1,
 };
 
-function buildWsUrl(scenario: ScenarioId, difficulty: Difficulty, topic: string) {
+function buildWsUrl(
+  scenario: ScenarioId,
+  difficulty: Difficulty,
+  topic: string,
+  personaTone: PersonaTone,
+) {
   const base = new URL(BACKEND_URL);
   base.protocol = base.protocol === "https:" ? "wss:" : "ws:";
   base.pathname = "/ws/debate";
   base.search = "";
   base.searchParams.set("scenario", scenario);
   base.searchParams.set("difficulty", difficulty);
+  base.searchParams.set("persona_tone", personaTone);
   base.searchParams.set("audio_format", "binary");
   if (scenario === "custom_debate" && topic.trim()) {
     base.searchParams.set("topic", topic.trim());
@@ -97,6 +144,7 @@ function App() {
   const [hasStarted, setHasStarted] = useState(false);
   const [scenario, setScenario] = useState<ScenarioId>("vc_pitch");
   const [difficulty, setDifficulty] = useState<Difficulty>("hard");
+  const [personaTone, setPersonaTone] = useState<PersonaTone>("calm_ruthless");
   const [topic, setTopic] = useState("");
   const [connection, setConnection] = useState<"offline" | "connecting" | "live">("offline");
   const [aiState, setAiState] = useState<AiState>("idle");
@@ -174,7 +222,7 @@ function App() {
         const response = await fetch(`${BACKEND_URL}/api/scenarios/custom`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ topic: trimmed, difficulty }),
+          body: JSON.stringify({ topic: trimmed, difficulty, persona_tone: personaTone }),
           signal: controller.signal,
         });
         if (!response.ok) {
@@ -202,7 +250,7 @@ function App() {
       controller.abort();
       window.clearTimeout(timeout);
     };
-  }, [difficulty, topic]);
+  }, [difficulty, personaTone, topic]);
 
   useEffect(() => {
     if (topicPrep.status !== "thinking") return;
@@ -315,7 +363,7 @@ function App() {
     } catch {
       setStatusText("audio blocked");
     }
-    const socket = new WebSocket(buildWsUrl(sessionScenario, difficulty, topic));
+    const socket = new WebSocket(buildWsUrl(sessionScenario, difficulty, topic, personaTone));
     socket.binaryType = "arraybuffer";
     wsRef.current = socket;
 
@@ -351,7 +399,7 @@ function App() {
       setAiState("idle");
       setStatusText("closed");
     };
-  }, [difficulty, disconnect, handleEvent, stopMic, topic]);
+  }, [difficulty, disconnect, handleEvent, personaTone, stopMic, topic]);
 
   const startDebate = async () => {
     const selectedScenario = topic.trim() ? "custom_debate" : scenario;
@@ -449,22 +497,41 @@ function App() {
           </div>
 
           <div className="predefined-topics" aria-label="Predefined topics">
-            {scenarios.filter((item) => item.id !== "custom_debate").map((item) => (
+            {scenarios
+              .filter((item) => item.id !== "custom_debate")
+              .map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  className={scenario === item.id && !topic.trim() ? "selected" : ""}
+                  onClick={() => {
+                    setScenario(item.id);
+                    setTopic("");
+                  }}
+                >
+                  <span className="scenario-tag-badge">{item.tag}</span>
+                  <span>{item.label}</span>
+                  <small>{item.topic}</small>
+                </button>
+              ))}
+          </div>
+
+          <div className="section-label">Adversary Persona Tone</div>
+          <div className="persona-tones-row" aria-label="Adversary Persona Tone">
+            {personaTones.map((item) => (
               <button
                 key={item.id}
                 type="button"
-                className={scenario === item.id && !topic.trim() ? "selected" : ""}
-                onClick={() => {
-                  setScenario(item.id);
-                  setTopic("");
-                }}
+                className={personaTone === item.id ? "selected" : ""}
+                onClick={() => setPersonaTone(item.id)}
+                title={item.desc}
               >
-                <span>{item.label}</span>
-                <small>{item.topic}</small>
+                {item.label}
               </button>
             ))}
           </div>
 
+          <div className="section-label">Sparring Intensity</div>
           <div className="difficulty-row" aria-label="Difficulty">
             {difficulties.map((item) => (
               <button

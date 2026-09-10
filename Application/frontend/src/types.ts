@@ -2,7 +2,36 @@ export type ScenarioId =
   | "vc_pitch"
   | "salary_negotiation"
   | "hostile_cross_exam"
+  | "senior_interview"
+  | "sales_objections"
+  | "media_crisis"
+  | "hostile_boardroom"
   | "custom_debate";
+
+export type PersonaTone =
+  | "calm_ruthless"
+  | "skeptical_vc"
+  | "courtroom_aggressive"
+  | "cold_negotiator"
+  | "smiling_assassin";
+
+export type PersonaToneConfig = {
+  id: PersonaTone;
+  name: string;
+  description: string;
+  speaker: string;
+};
+
+export type ScenarioDefinition = {
+  id: ScenarioId;
+  name: string;
+  title: string;
+  description: string;
+  opening_statement: string;
+  speaker?: string;
+  tags: string[];
+  is_custom: boolean;
+};
 
 export type Difficulty = "easy" | "medium" | "hard" | "ruthless";
 export type AiState = "listening" | "thinking" | "speaking" | "interrupted" | "idle";
