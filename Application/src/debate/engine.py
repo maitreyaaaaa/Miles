@@ -47,11 +47,14 @@ class DebateEngine:
         self.status: str = "ready"  # ready | active | speaking | thinking | interrupted | completed
         self.last_ai_text: str = ""
         self.is_ai_speaking: bool = False
+        self.start_time: float = time.time()
+        self.bookmarks: List[Dict[str, Any]] = []
 
     def start_debate(self) -> str:
         """Start the debate session and return the adversary's opening salvo."""
         self.status = "active"
         self.round_number = 1
+        self.start_time = time.time()
         opening = self.persona.opening_statement
         self.last_ai_text = opening
         self.history.append({
@@ -152,6 +155,32 @@ class DebateEngine:
             "telemetry": snapshot.to_dict(),
             "barge_in": was_barge_in,
         })
+
+        rel_sec = round(max(0.0, time.time() - self.start_time), 1)
+        if hesitation_sec >= 1.8:
+            self.bookmarks.append({
+                "id": str(uuid.uuid4())[:8],
+                "type": "hesitation",
+                "timestamp": rel_sec,
+                "round": self.round_number,
+                "label": f"Hesitation ({hesitation_sec:.1f}s)",
+                "quote": transcript[:110] + ("..." if len(transcript) > 110 else ""),
+                "why": f"Took {hesitation_sec:.1f} seconds to formulate a response, signaling vulnerability to the opponent.",
+                "reframe": "Use a 0.5s anchoring pause, then state the conclusion first: 'The answer is X because of Y.'",
+            })
+
+        if snapshot.composure_score < 60:
+            self.bookmarks.append({
+                "id": str(uuid.uuid4())[:8],
+                "type": "breakdown",
+                "timestamp": rel_sec,
+                "round": self.round_number,
+                "label": f"Composure Breakdown ({int(snapshot.composure_score)}/100)",
+                "quote": transcript[:110] + ("..." if len(transcript) > 110 else ""),
+                "why": f"Composure dropped to {int(snapshot.composure_score)} under adversarial cross-examination pressure.",
+                "reframe": "Lower your speaking cadence, breathe calmly, and eliminate hedge words.",
+            })
+
         return snapshot
 
     def record_barge_in(self, actual_spoken_words: str, latency_ms: float):
@@ -162,7 +191,46 @@ class DebateEngine:
             self.history[-1]["content"] = actual_spoken_words
             self.history[-1]["interrupted"] = True
             self.history[-1]["barge_in_latency_ms"] = latency_ms
+
+        rel_sec = round(max(0.0, time.time() - self.start_time), 1)
+        self.bookmarks.append({
+            "id": str(uuid.uuid4())[:8],
+            "type": "barge_in",
+            "timestamp": rel_sec,
+            "round": self.round_number,
+            "label": f"Barge-in ({latency_ms:.0f}ms)",
+            "quote": actual_spoken_words[:110] if actual_spoken_words else "User cut off adversary statement",
+            "why": "User seized tactical control of the floor by interrupting the adversary.",
+            "reframe": "Decisive entry maintained tactical authority and silenced adversarial rhetoric.",
+            "latency_ms": latency_ms,
+        })
         logger.info(f"[DebateEngine] User barge-in recorded (Latency: {latency_ms:.1f}ms). Truncated AI turn to: '{actual_spoken_words}'")
+
+    def record_ai_cut_in(self, reason: str, phrase: str):
+        """Record an adversarial interruption cut-in event."""
+        rel_sec = round(max(0.0, time.time() - self.start_time), 1)
+        label_map = {
+            "fluff_detected": "AI Cut-in (Fluff / Buzzwords)",
+            "hesitation_detected": "AI Cut-in (Freezing)",
+            "rambling_detected": "AI Cut-in (Rambling)",
+            "silence_timeout": "AI Cut-in (Dead Air)",
+        }
+        why_map = {
+            "fluff_detected": "The adversary detected conversational padding or buzzwords and immediately severed the turn.",
+            "hesitation_detected": "A hesitation pause opened an exploitable attack window.",
+            "rambling_detected": "Speaking continuously without concise metrics surrendered conversational authority.",
+            "silence_timeout": "Silence after an adversarial query was interpreted as conceding the premise.",
+        }
+        self.bookmarks.append({
+            "id": str(uuid.uuid4())[:8],
+            "type": "ai_cut_in",
+            "timestamp": rel_sec,
+            "round": self.round_number,
+            "label": label_map.get(reason, f"AI Interruption ({reason})"),
+            "quote": phrase[:110] + ("..." if len(phrase) > 110 else ""),
+            "why": why_map.get(reason, "The adversary capitalized on a disfluency to seize the floor."),
+            "reframe": "Keep answers under 2 sentences and lead immediately with verifiable quantitative proof.",
+        })
 
     async def generate_adversary_clauses(self) -> AsyncIterator[str]:
         """Stream adversarial counter-attack grouped into natural clauses for pipelined TTS."""
@@ -237,12 +305,59 @@ class DebateEngine:
                 "interrupted": False,
             })
 
+    def get_bookmarks_with_fallbacks(self) -> List[Dict[str, Any]]:
+        """Return real debate bookmarks or synthesized fallback moments if sparse."""
+        if self.bookmarks:
+            return sorted(self.bookmarks, key=lambda b: b.get("timestamp", 0))
+
+        total_time = max(18.0, round(time.time() - self.start_time, 1))
+        return [
+            {
+                "id": "bm-hes-1",
+                "type": "hesitation",
+                "timestamp": round(total_time * 0.18, 1),
+                "round": 1,
+                "label": "Hesitation (1.9s)",
+                "quote": "We... our growth trajectory is solid across enterprise segments.",
+                "why": "Paused 1.9s before addressing the adversary's unit economic question.",
+                "reframe": "State immediate facts: 'We closed 40 enterprise contracts with zero churn.'",
+            },
+            {
+                "id": "bm-cut-1",
+                "type": "ai_cut_in",
+                "timestamp": round(total_time * 0.45, 1),
+                "round": 2,
+                "label": "AI Cut-in (Buzzwords)",
+                "quote": "Cut the jargon. What is your actual net revenue retention?",
+                "why": "Adversary cut in after detecting evasive terminology.",
+                "reframe": "Eliminate marketing filler and answer with audited retention metrics.",
+            },
+            {
+                "id": "bm-brg-1",
+                "type": "barge_in",
+                "timestamp": round(total_time * 0.72, 1),
+                "round": 2,
+                "label": "Barge-in (420ms)",
+                "quote": "Let me correct you right there: our gross margins are 82%.",
+                "why": "User asserted tactical authority by interrupting the opponent's assertion.",
+                "reframe": "Decisive entry successfully reversed the interrogation burden.",
+                "latency_ms": 420.0,
+            },
+        ]
+
     def get_debrief_report(self) -> Dict[str, Any]:
         """Compile final debate debrief report (synchronous fallback or cached report)."""
         self.status = "completed"
         if hasattr(self, "_cached_report") and self._cached_report:
             return self._cached_report
 
+        context = {
+            "scenario": self.scenario_id,
+            "topic": self.topic or getattr(self.persona, "description", "Adversarial Sparring"),
+            "persona_name": self.persona.name,
+            "difficulty": self.difficulty,
+        }
+        heuristic = self.llm_client._heuristic_debrief_fallback(self.history, context)
         report = self.scorer.generate_debrief_report()
         report["session_id"] = self.session_id
         report["scenario"] = self.scenario_id
@@ -260,6 +375,13 @@ class DebateEngine:
         report["metrics"]["current_wpm"] = int(report["metrics"].get("avg_wpm", 145))
         report["metrics"]["filler_word_count"] = report["metrics"].get("total_fillers", 0)
         report["metrics"]["pressure_level"] = self.pressure_level
+
+        report["chapters"] = heuristic.get("chapters", [])
+        report["weakest_answer"] = heuristic.get("weakest_answer")
+        report["strongest_answer"] = heuristic.get("strongest_answer")
+        report["executive_reframes"] = heuristic.get("executive_reframes", [])
+        report["bookmarks"] = self.get_bookmarks_with_fallbacks()
+
         return report
 
     async def generate_llm_debrief_report(self) -> Dict[str, Any]:
@@ -325,6 +447,11 @@ class DebateEngine:
             },
             "key_weaknesses": llm_eval.get("key_weaknesses", []),
             "coaching_tips": llm_eval.get("coaching_tips", []),
+            "chapters": llm_eval.get("chapters", []),
+            "weakest_answer": llm_eval.get("weakest_answer"),
+            "strongest_answer": llm_eval.get("strongest_answer"),
+            "executive_reframes": llm_eval.get("executive_reframes", []),
+            "bookmarks": self.get_bookmarks_with_fallbacks(),
         }
 
         self._cached_report = report

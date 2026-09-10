@@ -372,6 +372,7 @@ async def websocket_debate(
         # Check for adversarial fluff interjection (only if not already speaking)
         interjection = engine.check_fluff_interruption(transcript, mid_hesitation)
         if interjection and not interruption_mgr.ai_is_speaking and not interruption_mgr.ai_is_thinking and not interruption_mgr.ai_interruption_active:
+            engine.record_ai_cut_in("fluff_detected", interjection)
             cut_event = interruption_mgr.trigger_ai_interruption(interjection, reason="fluff_detected")
             asyncio.create_task(safe_send_json(cut_event))
             asyncio.create_task(safe_send_json({
@@ -516,6 +517,7 @@ async def websocket_debate(
                 # 1. Rambling trigger (>11s without stopping)
                 rambling_cut = engine.check_rambling_interruption(speech_duration)
                 if rambling_cut:
+                    engine.record_ai_cut_in("rambling_detected", rambling_cut)
                     cut_event = interruption_mgr.trigger_ai_interruption(rambling_cut, reason="rambling_detected")
                     await safe_send_json(cut_event)
                     await safe_send_json({
@@ -534,6 +536,7 @@ async def websocket_debate(
                 if mid_speech_pause >= 2.0:
                     hesitation_cut = engine.check_hesitation_interruption(mid_speech_pause)
                     if hesitation_cut:
+                        engine.record_ai_cut_in("hesitation_detected", hesitation_cut)
                         cut_event = interruption_mgr.trigger_ai_interruption(hesitation_cut, reason="hesitation_detected")
                         await safe_send_json(cut_event)
                         await safe_send_json({
@@ -554,6 +557,7 @@ async def websocket_debate(
                 if dead_air >= 2.3:
                     hesitation_cut = engine.check_hesitation_interruption(dead_air)
                     if hesitation_cut:
+                        engine.record_ai_cut_in("silence_timeout", hesitation_cut)
                         cut_event = interruption_mgr.trigger_ai_interruption(hesitation_cut, reason="silence_timeout")
                         await safe_send_json(cut_event)
                         await safe_send_json({

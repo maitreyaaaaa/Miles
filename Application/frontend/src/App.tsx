@@ -4,6 +4,7 @@ import { MicrophoneStreamer, VoicePlayer } from "./audio";
 import { PreflightModal } from "./components/PreflightModal";
 import { DossierPreview } from "./components/DossierPreview";
 import { DominanceHUD } from "./components/DominanceHUD";
+import { DebriefModal } from "./components/DebriefModal";
 import type {
   AiState,
   BattleDossier,
@@ -607,7 +608,7 @@ function App() {
       )}
 
       {report && !debriefLoading && (
-        <Debrief
+        <DebriefModal
           report={report}
           telemetry={telemetry}
           transcriptCount={transcripts.filter((line) => line.is_final).length}
@@ -636,90 +637,6 @@ function Logo({ compact = false }: { compact?: boolean }) {
   return (
     <div className="logo home-logo">
       <img src="/miles_home_logo.png" alt="Miles" className="home-logo-image" />
-    </div>
-  );
-}
-
-function Debrief({
-  report,
-  telemetry,
-  transcriptCount,
-  interruptions,
-  onClose,
-}: {
-  report: DebateReportEvent;
-  telemetry: TelemetryEvent;
-  transcriptCount: number;
-  interruptions: number;
-  onClose: () => void;
-}) {
-  const m = report.metrics || {};
-  const composureVal = m.composure_score !== undefined ? Math.round(Number(m.composure_score)) : Math.round(telemetry.composure_score);
-  const cadenceVal = m.current_wpm !== undefined ? Math.round(Number(m.current_wpm)) : Math.round(telemetry.current_wpm);
-  const fillersVal = m.filler_word_count !== undefined ? Number(m.filler_word_count) : telemetry.filler_word_count;
-  const pressureVal = m.pressure_level !== undefined ? `${m.pressure_level}/5` : `${telemetry.pressure_level}/5`;
-  const turnsVal = m.turns_count !== undefined ? Number(m.turns_count) : transcriptCount;
-  const bargeInsVal = m.barge_ins !== undefined ? Number(m.barge_ins) : interruptions;
-
-  const reportMetrics = [
-    ["Score", Math.round(report.overall_score).toString()],
-    ["Composure", composureVal.toString()],
-    ["Cadence", `${cadenceVal} WPM`],
-    ["Fillers", fillersVal.toString()],
-    ["Pressure", pressureVal],
-    ["Turns", turnsVal.toString()],
-    ["Barge-ins", bargeInsVal.toString()],
-  ];
-
-  const detectedFillers = Array.isArray(m.detected_fillers) ? (m.detected_fillers as string[]) : [];
-
-  return (
-    <div className="modal-backdrop" role="presentation">
-      <section className="debrief" role="dialog" aria-modal="true" aria-label="Debrief report">
-        <header>
-          <div>
-            <span>Debrief Report</span>
-            <h2>{report.verdict}</h2>
-            {report.verdict_description && (
-              <p className="debrief-verdict-desc">{report.verdict_description}</p>
-            )}
-          </div>
-          <strong>{Math.round(report.overall_score)}</strong>
-        </header>
-        <div className="final-metrics">
-          {reportMetrics.map(([label, value]) => (
-            <div key={label}>
-              <span>{label}</span>
-              <strong>{value}</strong>
-            </div>
-          ))}
-        </div>
-        {detectedFillers.length > 0 && (
-          <div className="detected-fillers-row">
-            <span className="fillers-label">Detected Fillers:</span>
-            <div className="fillers-chips">
-              {detectedFillers.map((w, idx) => (
-                <span key={`${w}-${idx}`} className="filler-chip">"{w}"</span>
-              ))}
-            </div>
-          </div>
-        )}
-        <div className="report-grid">
-          <div>
-            <h3>Weaknesses</h3>
-            {report.key_weaknesses.map((item, idx) => (
-              <p key={idx}>{item}</p>
-            ))}
-          </div>
-          <div>
-            <h3>Coaching</h3>
-            {report.coaching_tips.map((item, idx) => (
-              <p key={idx}>{item}</p>
-            ))}
-          </div>
-        </div>
-        <button type="button" onClick={onClose}>Close</button>
-      </section>
     </div>
   );
 }

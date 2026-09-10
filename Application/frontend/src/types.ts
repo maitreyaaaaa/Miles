@@ -46,14 +46,61 @@ export type MicLockEvent = {
   reason?: string;
 };
 
+export type DebateChapter = {
+  round: number;
+  title: string;
+  summary: string;
+  score: number;
+};
+
+export type WeakestAnswer = {
+  quote: string;
+  why_faltered: string;
+  vulnerability: string;
+};
+
+export type StrongestAnswer = {
+  quote: string;
+  why_commanding: string;
+  evidence_cited: string;
+};
+
+export type ExecutiveReframe = {
+  original_quote: string;
+  executive_reframe: string;
+  rationale: string;
+};
+
+export type MomentBookmark = {
+  id: string;
+  type: "hesitation" | "ai_cut_in" | "barge_in" | "breakdown";
+  timestamp: number;
+  round: number;
+  label: string;
+  quote?: string;
+  why: string;
+  reframe?: string;
+  latency_ms?: number;
+};
+
 export type DebateReportEvent = {
   type: "debate_report";
+  session_id?: string;
+  scenario?: string;
+  topic?: string;
+  difficulty?: string;
+  rounds_completed?: number;
   overall_score: number;
   verdict: string;
   verdict_description?: string;
   metrics: Record<string, number | string | string[]>;
   key_weaknesses: string[];
   coaching_tips: string[];
+  chapters?: DebateChapter[];
+  weakest_answer?: WeakestAnswer;
+  strongest_answer?: StrongestAnswer;
+  executive_reframes?: ExecutiveReframe[];
+  bookmarks?: MomentBookmark[];
 };
 
 export type AudioChunkEvent = {

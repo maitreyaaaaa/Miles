@@ -94,3 +94,41 @@ def test_detect_micro_hesitations():
     assert "vc_pitch" in SCENARIO_VOCABULARY
     assert "CAC" in SCENARIO_VOCABULARY["vc_pitch"]
     assert "salary_negotiation" in SCENARIO_VOCABULARY
+
+
+def test_debrief_2_bookmarks_and_chapters():
+    engine = DebateEngine(scenario_id="vc_pitch")
+    engine.start_debate()
+
+    # 1. User barge-in
+    engine.record_barge_in(actual_spoken_words="Wait Marcus, let me address that directly.", latency_ms=45.0)
+
+    # 2. User answers with hesitation
+    engine.record_user_turn(
+        transcript="Um, we are seeing strong organic enterprise interest.",
+        duration_sec=3.5,
+        hesitation_sec=2.1,
+    )
+
+    # 3. AI cut-in
+    engine.record_ai_cut_in(reason="fluff_detected", phrase="Cut the buzzwords. What is your net retention?")
+
+    assert len(engine.bookmarks) >= 3
+    types = [b["type"] for b in engine.bookmarks]
+    assert "barge_in" in types
+    assert "hesitation" in types
+    assert "ai_cut_in" in types
+
+    # 4. Debrief Report 2.0 structure
+    report = engine.get_debrief_report()
+    assert "bookmarks" in report
+    assert len(report["bookmarks"]) >= 3
+    assert "chapters" in report
+    assert len(report["chapters"]) >= 1
+    assert "weakest_answer" in report
+    assert "quote" in report["weakest_answer"]
+    assert "strongest_answer" in report
+    assert "quote" in report["strongest_answer"]
+    assert "executive_reframes" in report
+    assert len(report["executive_reframes"]) >= 1
+

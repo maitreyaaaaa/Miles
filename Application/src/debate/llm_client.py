@@ -447,6 +447,26 @@ class LLMClient:
             '    "<Actionable coaching tip 1 tailored to the transcript>",\n'
             '    "<Actionable coaching tip 2 tailored to the transcript>",\n'
             '    "<Actionable coaching tip 3 tailored to the transcript>"\n'
+            '  ],\n'
+            '  "chapters": [\n'
+            '    {"round": 1, "title": "Round 1: Initial Grilling", "summary": "<summary>", "score": <int 10-100>}\n'
+            '  ],\n'
+            '  "weakest_answer": {\n'
+            '    "quote": "<exact user quote>",\n'
+            '    "why_faltered": "<why the argument faltered>",\n'
+            '    "vulnerability": "<tactical vulnerability exposed>"\n'
+            '  },\n'
+            '  "strongest_answer": {\n'
+            '    "quote": "<exact user quote>",\n'
+            '    "why_commanding": "<why it was commanding>",\n'
+            '    "evidence_cited": "<evidence or metrics cited>"\n'
+            '  },\n'
+            '  "executive_reframes": [\n'
+            '    {\n'
+            '      "original_quote": "<original user quote>",\n'
+            '      "executive_reframe": "<crisp, authoritative rewrite>",\n'
+            '      "rationale": "<why this reframe commands the room>"\n'
+            '    }\n'
             '  ]\n'
             "}"
         )
@@ -532,6 +552,55 @@ class LLMClient:
         score = max(55, min(92, 85 - len(detected_fillers) * 3))
         wpm = 145 if word_count > 10 else 130
 
+        if user_texts:
+            sorted_by_len = sorted(user_texts, key=lambda t: len(t.split()))
+            weakest_str = sorted_by_len[0][:120]
+            strongest_str = sorted_by_len[-1][:120]
+            weakest = {
+                "quote": weakest_str,
+                "why_faltered": "Relied on conversational hedging rather than commanding empirical evidence.",
+                "vulnerability": "Conceded the core premises without asserting hard counter-metrics.",
+            }
+            strongest = {
+                "quote": strongest_str,
+                "why_commanding": "Directly challenged the adversary's framing with decisive pacing.",
+                "evidence_cited": "Asserted operational metrics and held ground under pressure.",
+            }
+        else:
+            weakest = {
+                "quote": "Our metrics are improving month over month.",
+                "why_faltered": "Relied on qualitative optimism instead of auditable facts.",
+                "vulnerability": "Left CAC payback and burn multiple undefended.",
+            }
+            strongest = {
+                "quote": "We hold eighty percent gross margins with seven-month payback.",
+                "why_commanding": "Front-loaded non-negotiable quantitative proof.",
+                "evidence_cited": "Gross margin and payback window.",
+            }
+
+        reframes = [
+            {
+                "original_quote": weakest["quote"],
+                "executive_reframe": "Our unit economics are profitable on first purchase, with a 7-month CAC payback across 1,200 paying seats.",
+                "rationale": "Directly terminates the inquiry with auditable numbers, eliminating room for adversarial follow-up.",
+            },
+            {
+                "original_quote": "We believe our moat will hold as we scale up.",
+                "executive_reframe": "Our moat is proprietary workflow integration with 99.4% retention; replacement switching costs exceed $200K per customer.",
+                "rationale": "Replaces belief with quantifiable switching costs and retention data.",
+            },
+        ]
+
+        chapters = []
+        rounds_seen = max(1, len([h for h in transcript_history if h.get("role") == "user"]))
+        for r in range(1, rounds_seen + 1):
+            chapters.append({
+                "round": r,
+                "title": f"Round {r}: Tactical Exchange",
+                "summary": f"Exchanged arguments under Level {min(5, r + 1)} adversarial pressure.",
+                "score": max(50, min(95, score + (r * 2) - 3)),
+            })
+
         return {
             "overall_score": score,
             "composure_score": max(50, score - 5),
@@ -550,4 +619,8 @@ class LLMClient:
                 "Embrace 1-2 seconds of quiet composure rather than filling space with placeholder words.",
                 "Counter-attack with a clarifying question to reverse the burden of proof.",
             ],
+            "chapters": chapters,
+            "weakest_answer": weakest,
+            "strongest_answer": strongest,
+            "executive_reframes": reframes,
         }
