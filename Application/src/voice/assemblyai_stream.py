@@ -9,6 +9,8 @@ from typing import Any, AsyncIterator, Callable, Dict, List, Optional
 import httpx
 import websockets
 
+from src.analytics.composure_scorer import FILLER_WORDS
+
 logger = logging.getLogger(__name__)
 
 ASSEMBLYAI_TOKEN_URL = "https://streaming.assemblyai.com/v3/token?expires_in_seconds=480"
@@ -150,10 +152,10 @@ class AssemblyAIStreamingClient:
                             if self.on_speech_start:
                                 self.on_speech_start()
 
-                        # Check for disfluency/fillers in live stream
-                        for filler in ["um", "uh", "like", "basically", "sort of"]:
-                            if filler in transcript.lower():
-                                if self.on_filler_detected:
+                        # Check for disfluency/fillers in live stream if callback active
+                        if self.on_filler_detected:
+                            for filler in FILLER_WORDS:
+                                if filler in transcript.lower():
                                     self.on_filler_detected(filler)
 
                         if is_final:

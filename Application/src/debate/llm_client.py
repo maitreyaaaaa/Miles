@@ -6,6 +6,7 @@ import random
 import re
 from typing import Any, AsyncIterator, Dict, List, Optional
 
+from src.analytics.composure_scorer import FILLER_WORDS
 from src.config import config
 
 logger = logging.getLogger(__name__)
@@ -522,10 +523,10 @@ class LLMClient:
         words = re.findall(r"\b\w+\b", all_user_text)
         word_count = len(words)
 
-        # Detect actual fillers in user text
+        # Detect actual fillers in user text using canonical lexicon
         detected_fillers = []
-        for word in ["um", "uh", "like", "basically", "actually", "literally", "sort of", "kind of"]:
-            matches = re.findall(rf"\b{word}\b", all_user_text.lower())
+        for word in FILLER_WORDS:
+            matches = re.findall(rf"\b{re.escape(word)}\b", all_user_text.lower())
             detected_fillers.extend(matches)
 
         score = max(55, min(92, 85 - len(detected_fillers) * 3))

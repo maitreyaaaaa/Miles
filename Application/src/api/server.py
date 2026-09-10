@@ -185,14 +185,14 @@ async def websocket_debate(
     async def safe_send_json(payload: Dict):
         try:
             await websocket.send_text(json.dumps(payload))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[WebSocket] safe_send_json suppressed: {e}")
 
     async def safe_send_bytes(data: bytes):
         try:
             await websocket.send_bytes(data)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[WebSocket] safe_send_bytes suppressed: {e}")
 
     async def stream_ai_audio(
         text: str,
@@ -386,7 +386,7 @@ async def websocket_debate(
                     first_clause = False
 
                 # Stream this clause to TTS and browser
-                if not stop_event.is_set() and interruption_mgr.ai_is_speaking:
+                if not stop_event.is_set():
                     await stream_ai_audio(clause, mark_finished_at_end=False)
 
             # Mark final completed text
@@ -547,7 +547,9 @@ async def websocket_debate(
                     cmd_type = payload.get("type")
 
                     if cmd_type == "end_debate":
-                        # Silence any ongoing AI speech and pause monitoring
+                        # Silence any ongoing AI speech and cancel monitoring loop
+                        if monitor_task and not monitor_task.done():
+                            monitor_task.cancel()
                         interruption_mgr.mark_ai_finished()
                         tts_client.cancel()
                         if active_ai_turn_task and not active_ai_turn_task.done():
@@ -596,3 +598,4 @@ async def websocket_debate(
         if stt_client:
             await stt_client.stop()
         tts_client.cancel()
+        await tts_client.close()

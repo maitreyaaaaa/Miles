@@ -100,6 +100,16 @@ def test_websocket_debate_lifecycle():
 
         assert user_transcript_confirmed, "Expected user transcript confirmation in WebSocket stream"
 
+        # Verify AI counter-attack response is generated and streamed
+        ai_response_confirmed = False
+        for _ in range(35):
+            msg = _receive_event(ws)
+            if msg.get("type") == "transcript" and msg.get("role") == "ai":
+                ai_response_confirmed = True
+                break
+
+        assert ai_response_confirmed, "Expected AI counter-response after user statement"
+
         # Request end debate and debrief report
         ws.send_text(json.dumps({"type": "end_debate"}))
 
