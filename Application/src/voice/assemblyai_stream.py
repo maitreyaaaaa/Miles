@@ -242,6 +242,8 @@ class AssemblyAIStreamingClient:
                 pass
             self._ws = None
 
-        for task in (self._send_task, self._recv_task):
-            if task and not task.done():
-                task.cancel()
+        tasks_to_cancel = [task for task in (self._send_task, self._recv_task) if task and not task.done()]
+        for task in tasks_to_cancel:
+            task.cancel()
+        if tasks_to_cancel:
+            await asyncio.gather(*tasks_to_cancel, return_exceptions=True)

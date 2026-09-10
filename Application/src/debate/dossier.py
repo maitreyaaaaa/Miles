@@ -130,7 +130,7 @@ def generate_fallback_dossier(
         else f"You attack '{clean_topic}'? That is a shallow critique. Give me verifiable data right now."
     )
 
-    profile = DIFFICULTY_PROFILES.get(difficulty.lower(), DIFFICULTY_PROFILES["hard"])
+    profile = DIFFICULTY_PROFILES.get((difficulty or "hard").lower(), DIFFICULTY_PROFILES["hard"])
 
     return {
         "scenario_id": "custom_debate",

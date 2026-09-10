@@ -240,6 +240,25 @@ class DebateEngine:
             "reframe": "Keep answers under 2 sentences and lead immediately with verifiable quantitative proof.",
         })
 
+    def record_micro_hesitation(self, gap_ms: float, word_before: str = "", word_after: str = ""):
+        """Record an AssemblyAI detected micro-hesitation gap into bookmarks."""
+        rel_sec = round(max(0.0, time.time() - self.start_time), 1)
+        gap_sec = round(gap_ms / 1000.0, 2)
+        # Avoid duplicate bookmarks if multiple words trigger within 2 seconds
+        if self.bookmarks and self.bookmarks[-1]["type"] == "hesitation" and abs(self.bookmarks[-1]["timestamp"] - rel_sec) < 2.0:
+            return
+        context_quote = f"{word_before} ... {word_after}".strip() if (word_before or word_after) else "Mid-sentence hesitation"
+        self.bookmarks.append({
+            "id": str(uuid.uuid4())[:8],
+            "type": "hesitation",
+            "timestamp": rel_sec,
+            "round": self.round_number,
+            "label": f"Micro-Hesitation ({gap_sec:.1f}s)",
+            "quote": context_quote,
+            "why": f"AssemblyAI audio intelligence detected a {gap_sec:.1f}s silence gap between spoken words.",
+            "reframe": "Keep thought pacing continuous; pause before starting a clause rather than stalling mid-sentence.",
+        })
+
     async def generate_adversary_clauses(self) -> AsyncIterator[str]:
         """Stream adversarial counter-attack grouped into natural clauses for pipelined TTS."""
         self.status = "speaking"

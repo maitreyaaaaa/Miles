@@ -7,7 +7,7 @@ import logging
 import math
 import struct
 import time
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -113,13 +113,15 @@ async def probe_rime() -> str:
     """Probe Rime Coda connection pool readiness."""
     if not config.rime_api_key:
         return "system_fallback"
+    client = RimeStreamingTTSClient(api_key=config.rime_api_key)
     try:
-        client = RimeStreamingTTSClient(api_key=config.rime_api_key)
         http_client = await client.get_http_client()
         return "connected" if http_client and not http_client.is_closed else "degraded"
     except Exception as e:
         logger.warning(f"[Preflight] Rime probe failed: {e}")
         return "system_fallback"
+    finally:
+        await client.close()
 
 
 @app.get("/api/preflight")
@@ -241,12 +243,16 @@ async def websocket_debate(
     stop_event = asyncio.Event()
 
     async def safe_send_json(payload: Dict):
+        if stop_event.is_set():
+            return
         try:
             await websocket.send_text(json.dumps(payload))
         except Exception as e:
             logger.debug(f"[WebSocket] safe_send_json suppressed: {e}")
 
     async def safe_send_bytes(data: bytes):
+        if stop_event.is_set():
+            return
         try:
             await websocket.send_bytes(data)
         except Exception as e:
@@ -449,6 +455,13 @@ async def websocket_debate(
         """Process word-level timestamps and micro-hesitation events."""
         if hesitations:
             recent_micro_hesitations.extend(hesitations)
+            for h in hesitations:
+                if h.get("gap_ms", 0) >= 1100:
+                    engine.record_micro_hesitation(
+                        gap_ms=h["gap_ms"],
+                        word_before=h.get("word_before", ""),
+                        word_after=h.get("word_after", ""),
+                    )
             asyncio.create_task(emit_speech_intelligence())
 
     async def execute_ai_turn():

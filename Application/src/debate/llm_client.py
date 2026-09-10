@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import random
 import re
@@ -63,6 +64,39 @@ def clean_spoken_text(text: str) -> str:
             cleaned = " ".join(words[:24]).rstrip(".,;:") + "?"
 
     return cleaned
+
+
+def extract_and_parse_json(text: str) -> Optional[Dict[str, Any]]:
+    """Robustly extract and parse JSON object from LLM response text, stripping markdown code blocks."""
+    if not text:
+        return None
+    cleaned = text.strip()
+    if cleaned.startswith("```json"):
+        cleaned = cleaned[7:]
+    elif cleaned.startswith("```"):
+        cleaned = cleaned[3:]
+    if cleaned.endswith("```"):
+        cleaned = cleaned[:-3]
+    cleaned = cleaned.strip()
+
+    try:
+        data = json.loads(cleaned)
+        if isinstance(data, dict):
+            return data
+    except json.JSONDecodeError:
+        pass
+
+    # Regex search for the outermost {...} block
+    match = re.search(r"(\{.*\})", cleaned, re.DOTALL)
+    if match:
+        try:
+            data = json.loads(match.group(1))
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+
+    return None
 
 
 class LLMClient:
@@ -499,9 +533,10 @@ class LLMClient:
                 )
                 raw_json = response.choices[0].message.content
                 if raw_json:
-                    parsed = json.loads(raw_json)
-                    logger.info(f"[LLMClient] {model} generated debrief successfully: verdict={parsed.get('verdict')}")
-                    return parsed
+                    parsed = extract_and_parse_json(raw_json)
+                    if parsed:
+                        logger.info(f"[LLMClient] {model} generated debrief successfully: verdict={parsed.get('verdict')}")
+                        return parsed
             except Exception as e:
                 logger.error(f"[LLMClient] Error calling {model} for debrief: {e}")
 
@@ -519,7 +554,9 @@ class LLMClient:
                     ),
                 )
                 if response.text:
-                    return json.loads(response.text)
+                    parsed = extract_and_parse_json(response.text)
+                    if parsed:
+                        return parsed
             except Exception as e:
                 logger.error(f"[LLMClient] Gemini debrief fallback error: {e}")
 

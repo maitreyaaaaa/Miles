@@ -132,3 +132,57 @@ def test_debrief_2_bookmarks_and_chapters():
     assert "executive_reframes" in report
     assert len(report["executive_reframes"]) >= 1
 
+
+def test_record_micro_hesitation_bookmark():
+    engine = DebateEngine(scenario_id="vc_pitch")
+    engine.start_debate()
+
+    engine.record_micro_hesitation(gap_ms=1350, word_before="our", word_after="burn")
+    assert len(engine.bookmarks) == 1
+    bm = engine.bookmarks[0]
+    assert bm["type"] == "hesitation"
+    assert "1.4s" in bm["label"]
+    assert "our ... burn" == bm["quote"]
+
+    # Deduplication within 2 seconds
+    engine.record_micro_hesitation(gap_ms=1200, word_before="multiple", word_after="is")
+    assert len(engine.bookmarks) == 1  # Deduplicated
+
+    report = engine.get_debrief_report()
+    assert any("our ... burn" in b.get("quote", "") for b in report["bookmarks"])
+
+
+def test_extract_and_parse_json():
+    from src.debate.llm_client import extract_and_parse_json
+
+    # 1. Clean JSON
+    res1 = extract_and_parse_json('{"overall_score": 88, "verdict": "DOMINANT"}')
+    assert res1 is not None
+    assert res1["overall_score"] == 88
+
+    # 2. Markdown fenced JSON
+    res2 = extract_and_parse_json('```json\n{"overall_score": 75, "verdict": "PRESSURE POINT"}\n```')
+    assert res2 is not None
+    assert res2["overall_score"] == 75
+
+    # 3. Preamble text before JSON
+    res3 = extract_and_parse_json('Here is the evaluation report:\n{"overall_score": 92}\nHope this helps.')
+    assert res3 is not None
+    assert res3["overall_score"] == 92
+
+    # 4. Invalid input
+    assert extract_and_parse_json("") is None
+    assert extract_and_parse_json("Not a json at all") is None
+
+
+def test_dossier_defensive_difficulty():
+    from src.debate.dossier import generate_fallback_dossier
+
+    dossier = generate_fallback_dossier("Autonomous Agents", difficulty=None)
+    assert dossier is not None
+    assert dossier["scenario_id"] == "custom_debate"
+    assert dossier["topic"] == "Autonomous Agents"
+    assert len(dossier["attack_vectors"]) == 5
+    assert len(dossier["trap_questions"]) == 3
+
+

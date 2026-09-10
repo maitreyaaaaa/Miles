@@ -55,9 +55,20 @@ export const DemoHUD: React.FC<DemoHUDProps> = ({
       event_log: eventLog,
     };
 
-    navigator.clipboard.writeText(JSON.stringify(payload, null, 2));
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard
+        .writeText(JSON.stringify(payload, null, 2))
+        .then(() => {
+          setCopied(true);
+          setTimeout(() => setCopied(false), 2000);
+        })
+        .catch((err) => {
+          console.warn("[DemoHUD] Clipboard write failed:", err);
+        });
+    } else {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }
   };
 
   const getCategoryColor = (cat: DemoLogEntry["category"]) => {
