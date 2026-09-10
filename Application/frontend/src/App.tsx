@@ -19,6 +19,7 @@ import type {
   SpeechIntelligenceEvent,
   TelemetryEvent,
   TranscriptLine,
+  TurnTelemetryEvent,
 } from "./types";
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL ?? "http://localhost:8000";
@@ -172,6 +173,7 @@ function App() {
     return sessionStorage.getItem("miles_preflight_passed") !== "true";
   });
   const [speechIntel, setSpeechIntel] = useState<SpeechIntelligenceEvent | null>(null);
+  const [turnTelemetry, setTurnTelemetry] = useState<TurnTelemetryEvent | null>(null);
   const { isDemoActive, toggleDemo, eventLog, logEvent, clearLog } = useDemoMode();
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -341,7 +343,9 @@ function App() {
         break;
       case "ai_state":
         setAiState(event.state);
-        if (event.state === "listening") {
+        if (event.state === "speaking") {
+          playerRef.current?.resetPlayback();
+        } else if (event.state === "listening") {
           micRef.current?.setMuted(false);
           setIsMicLocked(false);
         }
@@ -370,6 +374,20 @@ function App() {
           micro_hesitations: event.micro_hesitations?.length ?? 0,
         });
         break;
+      case "turn_telemetry":
+        setTurnTelemetry(event);
+        logEvent(
+          "telemetry",
+          "Turn Latency Telemetry",
+          `TTFA: ${Math.round(event.ttfa_ms)}ms | Barge-in: ${event.barge_in_latency_ms.toFixed(1)}ms | Model: ${event.llm_provider}`,
+          {
+            ttfa_ms: Math.round(event.ttfa_ms),
+            barge_in_ms: event.barge_in_latency_ms.toFixed(1),
+            stt: event.stt_provider,
+            tts: event.tts_provider,
+          }
+        );
+        break;
       case "pong":
         break;
     }
@@ -385,6 +403,8 @@ function App() {
     setTranscripts([]);
     setAiSubtitle(null);
     setTelemetry(initialTelemetry);
+    setSpeechIntel(null);
+    setTurnTelemetry(null);
     setDebriefLoading(false);
 
     playerRef.current = new VoicePlayer(22050);
@@ -456,6 +476,7 @@ function App() {
 
   const endDebate = () => {
     stopMic();
+    playerRef.current?.stopImmediately();
     setDebriefLoading(true);
     setDebriefMessage("Analyzing debate transcript with GPT-4o...");
     wsRef.current?.send(JSON.stringify({ type: "end_debate" }));
@@ -471,6 +492,7 @@ function App() {
     setInterruptionCount(0);
     setAiSubtitle(null);
     setSpeechIntel(null);
+    setTurnTelemetry(null);
   };
 
   if (!hasStarted) {
@@ -595,6 +617,7 @@ function App() {
           onClearLog={clearLog}
           telemetry={telemetry}
           speechIntel={speechIntel}
+          turnTelemetry={turnTelemetry}
           lastBargeInMs={lastInterruption?.by === "user" ? lastInterruption.latency_ms : undefined}
         />
       </main>
@@ -751,6 +774,7 @@ function App() {
         onClearLog={clearLog}
         telemetry={telemetry}
         speechIntel={speechIntel}
+        turnTelemetry={turnTelemetry}
         lastBargeInMs={lastInterruption?.by === "user" ? lastInterruption.latency_ms : undefined}
       />
     </main>

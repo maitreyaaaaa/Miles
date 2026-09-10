@@ -252,3 +252,21 @@ def test_websocket_speech_intelligence_event():
         assert "dominance_ratio" in intelligence_event
         assert "user_pct" in intelligence_event
         assert "ai_pct" in intelligence_event
+
+
+def test_websocket_turn_telemetry_event():
+    with client.websocket_connect("/ws/debate?scenario=senior_interview&difficulty=hard&audio_format=base64") as ws:
+        telemetry_event = None
+        for _ in range(25):
+            msg = _receive_event(ws)
+            if msg.get("type") == "turn_telemetry":
+                telemetry_event = msg
+                break
+        assert telemetry_event is not None, "Expected turn_telemetry event in WebSocket stream"
+        assert "ttfa_ms" in telemetry_event
+        assert "barge_in_latency_ms" in telemetry_event
+        assert "stt_provider" in telemetry_event
+        assert "tts_provider" in telemetry_event
+        assert "llm_provider" in telemetry_event
+        assert telemetry_event["ttfa_ms"] > 0
+

@@ -165,6 +165,15 @@ export type SpeechIntelligenceEvent = {
   stress_indicator?: string;
 };
 
+export type TurnTelemetryEvent = {
+  type: "turn_telemetry";
+  ttfa_ms: number;
+  barge_in_latency_ms: number;
+  stt_provider: string;
+  tts_provider: string;
+  llm_provider: string;
+};
+
 export type ServerEvent =
   | TranscriptEvent
   | InterruptionEvent
@@ -175,6 +184,7 @@ export type ServerEvent =
   | AudioChunkEvent
   | DebriefStatusEvent
   | SpeechIntelligenceEvent
+  | TurnTelemetryEvent
   | { type: "pong" };
 
 export type TranscriptLine = TranscriptEvent & {

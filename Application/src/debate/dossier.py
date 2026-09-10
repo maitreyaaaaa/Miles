@@ -79,7 +79,7 @@ def generate_fallback_dossier(
     persona_tone: str = "calm_ruthless",
 ) -> Dict[str, Any]:
     """Compile structured 5-vector battle dossier using heuristic intelligence."""
-    clean_topic = topic.strip()
+    clean_topic = topic.strip() if topic and topic.strip() else "Artificial Intelligence & Future of Work"
     normalized = clean_topic.lower()
     thesis = infer_contrarian_thesis(clean_topic)
     polarity = detect_topic_polarity(clean_topic)

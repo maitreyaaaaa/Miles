@@ -401,6 +401,7 @@ class DebateEngine:
         report["metrics"]["composure_score"] = int(round(self.scorer.score))
         report["metrics"]["current_wpm"] = int(report["metrics"].get("avg_wpm", 145))
         report["metrics"]["filler_word_count"] = report["metrics"].get("total_fillers", 0)
+        report["metrics"]["detected_fillers"] = heuristic.get("detected_fillers", [])
         report["metrics"]["pressure_level"] = self.pressure_level
 
         report["chapters"] = heuristic.get("chapters", [])

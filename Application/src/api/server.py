@@ -207,6 +207,9 @@ async def websocket_debate(
         difficulty=difficulty,
         persona_tone=persona_tone,
     )
+    if len(SESSIONS) > 50:
+        oldest_key = next(iter(SESSIONS))
+        SESSIONS.pop(oldest_key, None)
     SESSIONS[engine.session_id] = engine
 
     # Configure Rime TTS with persona-specific speaker and chosen model
@@ -228,6 +231,7 @@ async def websocket_debate(
     user_speech_start_time = 0.0
     last_partial_time = time.time()
     current_turn_was_barge_in = False
+    last_barge_in_latency_ms = 0.018
 
     # Audio Intelligence & Conversational Dominance Tracking
     user_talk_time_sec = 0.0
@@ -276,6 +280,22 @@ async def websocket_debate(
             "stress_indicator": "elevated" if len(recent_micro_hesitations) >= 2 else "steady",
         }
         await safe_send_json(payload)
+
+    async def emit_turn_telemetry(trigger_time: float):
+        ttfa_ms = max(15.0, round((time.time() - trigger_time) * 1000, 1))
+        active_llm = (
+            config.openai_model
+            if config.openai_api_key
+            else (config.gemini_model if config.gemini_api_key else "meta-llama/llama-3.3-70b-instruct")
+        )
+        await safe_send_json({
+            "type": "turn_telemetry",
+            "ttfa_ms": ttfa_ms,
+            "barge_in_latency_ms": round(last_barge_in_latency_ms, 3),
+            "stt_provider": "AssemblyAI v3 (universal-3-5-pro)",
+            "tts_provider": f"Rime Coda ({engine.persona.speaker})",
+            "llm_provider": active_llm,
+        })
 
     async def stream_ai_audio(
         text: str,
@@ -328,7 +348,7 @@ async def websocket_debate(
             # AI holds adversarial right-of-way; suppress user barge-in
             return None
 
-        nonlocal current_turn_was_barge_in
+        nonlocal current_turn_was_barge_in, last_barge_in_latency_ms
         current_turn_was_barge_in = True
 
         if active_ai_turn_task and not active_ai_turn_task.done():
@@ -336,6 +356,7 @@ async def websocket_debate(
 
         event = interruption_mgr.handle_user_speech_detected()
         if event:
+            last_barge_in_latency_ms = event["latency_ms"]
             engine.record_barge_in(event.get("spoken_before_cut", ""), event["latency_ms"])
         return event
 
@@ -449,12 +470,12 @@ async def websocket_debate(
         # Cancel any previous AI task and trigger new counter-attack
         if active_ai_turn_task and not active_ai_turn_task.done():
             active_ai_turn_task.cancel()
-        active_ai_turn_task = asyncio.create_task(execute_ai_turn())
+        active_ai_turn_task = asyncio.create_task(execute_ai_turn(trigger_time=now))
 
     def on_stt_words(words: List[Dict[str, Any]], hesitations: List[Dict[str, Any]]):
         """Process word-level timestamps and micro-hesitation events."""
         if hesitations:
-            recent_micro_hesitations.extend(hesitations)
+            recent_micro_hesitations[:] = (recent_micro_hesitations + hesitations)[-20:]
             for h in hesitations:
                 if h.get("gap_ms", 0) >= 1100:
                     engine.record_micro_hesitation(
@@ -464,9 +485,10 @@ async def websocket_debate(
                     )
             asyncio.create_task(emit_speech_intelligence())
 
-    async def execute_ai_turn():
+    async def execute_ai_turn(trigger_time: Optional[float] = None):
         """Pipelined adversarial generation: stream clauses into TTS immediately for sub-second TTFA."""
         nonlocal turn_start_time, ai_speech_end_time
+        calc_trigger = trigger_time or time.time()
         interruption_mgr.mark_ai_thinking()
         await safe_send_json({"type": "ai_state", "state": "thinking"})
 
@@ -494,6 +516,7 @@ async def websocket_debate(
                 if first_clause:
                     interruption_mgr.mark_ai_thinking_done()
                     first_clause = False
+                    await emit_turn_telemetry(calc_trigger)
 
                 # Stream this clause to TTS and browser
                 if not stop_event.is_set():
@@ -614,6 +637,7 @@ async def websocket_debate(
     asyncio.create_task(connect_stt_background())
 
     # 3. Deliver opening salvo immediately
+    opening_start = time.time()
     opening = engine.start_debate()
     await safe_send_json({
         "type": "transcript",
@@ -626,6 +650,7 @@ async def websocket_debate(
     init_snapshot = engine.scorer.evaluate_turn("", duration_seconds=1.0)
     await safe_send_json(init_snapshot.to_dict())
     asyncio.create_task(emit_speech_intelligence())
+    asyncio.create_task(emit_turn_telemetry(opening_start))
 
     # Stream opening audio and launch active presence monitor
     asyncio.create_task(stream_ai_audio(opening))

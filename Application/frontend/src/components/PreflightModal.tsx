@@ -17,6 +17,7 @@ export const PreflightModal: React.FC<PreflightModalProps> = ({ isOpen, onClose,
   const [error, setError] = useState<string | null>(null);
 
   const audioCtxRef = useRef<AudioContext | null>(null);
+  const chimeCtxRef = useRef<AudioContext | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const animFrameRef = useRef<number | null>(null);
 
@@ -81,12 +82,21 @@ export const PreflightModal: React.FC<PreflightModalProps> = ({ isOpen, onClose,
       if (audioCtxRef.current && audioCtxRef.current.state !== "closed") {
         audioCtxRef.current.close().catch(() => {});
       }
+      if (chimeCtxRef.current && chimeCtxRef.current.state !== "closed") {
+        chimeCtxRef.current.close().catch(() => {});
+        chimeCtxRef.current = null;
+      }
     };
   }, [isOpen]);
 
   const playChime = () => {
     try {
+      if (chimeCtxRef.current && chimeCtxRef.current.state !== "closed") {
+        chimeCtxRef.current.close().catch(() => {});
+        chimeCtxRef.current = null;
+      }
       const ctx = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
+      chimeCtxRef.current = ctx;
       ctx.resume().then(() => {
         const now = ctx.currentTime;
         const osc1 = ctx.createOscillator();
@@ -108,6 +118,13 @@ export const PreflightModal: React.FC<PreflightModalProps> = ({ isOpen, onClose,
         gain2.connect(ctx.destination);
         osc2.start(now + 0.25);
         osc2.stop(now + 0.6);
+
+        osc2.onended = () => {
+          if (chimeCtxRef.current === ctx) {
+            ctx.close().catch(() => {});
+            chimeCtxRef.current = null;
+          }
+        };
       });
     } catch (e) {
       console.warn("Chime playback error:", e);

@@ -105,3 +105,23 @@ def test_list_scenarios():
     assert "hostile_boardroom" in scenario_ids
     assert "custom_debate" in scenario_ids
 
+
+def test_custom_debate_persona_with_curly_braces():
+    """Ensure topics containing curly braces do not cause KeyError or format crashes."""
+    topic = "Testing {curly} braces and {eval} code syntax"
+    persona = get_persona("custom_debate", topic=topic, pressure_level=4, persona_tone="skeptical_vc")
+    assert persona.id == "custom_debate"
+    assert "{curly}" in persona.system_prompt
+    assert "TONE DIRECTIVE (SKEPTICAL VC)" in persona.system_prompt
+    assert persona.speaker == "bancroft"
+
+
+def test_fallback_dossier_empty_topic():
+    from src.debate.dossier import generate_fallback_dossier
+    dossier = generate_fallback_dossier("   ")
+    assert dossier["scenario_id"] == "custom_debate"
+    assert len(dossier["topic"]) > 0
+    assert len(dossier["attack_vectors"]) == 5
+    assert len(dossier["trap_questions"]) == 3
+
+

@@ -416,15 +416,14 @@ def get_persona(
     if scenario_id == "custom_debate" or (topic and scenario_id not in PERSONAS):
         chosen_topic = topic or "Artificial Intelligence & Future of Work"
         base = build_custom_debate_persona(chosen_topic, pressure_level=pressure_level)
+        formatted_prompt = base.system_prompt
     else:
         base = PERSONAS.get(scenario_id, PERSONAS["vc_pitch"])
-
-    directive = PRESSURE_DIRECTIVES.get(pressure_level, PRESSURE_DIRECTIVES[3])
-
-    formatted_prompt = base.system_prompt.format(
-        pressure_level=pressure_level,
-        pressure_directive=directive,
-    )
+        directive = PRESSURE_DIRECTIVES.get(pressure_level, PRESSURE_DIRECTIVES[3])
+        formatted_prompt = base.system_prompt.format(
+            pressure_level=pressure_level,
+            pressure_directive=directive,
+        )
 
     speaker = base.speaker
     if persona_tone and persona_tone in PERSONA_TONES:

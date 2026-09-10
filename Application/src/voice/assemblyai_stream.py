@@ -129,7 +129,7 @@ class AssemblyAIStreamingClient:
             if self.word_boost:
                 import urllib.parse
                 boost_param = urllib.parse.quote(json.dumps(self.word_boost))
-                ws_url += f"&word_boost={boost_param}"
+                ws_url += f"&word_boost={boost_param}&keyterms_prompt={boost_param}"
 
             logger.info("Connecting to AssemblyAI Universal-Streaming v3...")
             self._ws = await websockets.connect(
@@ -180,9 +180,21 @@ class AssemblyAIStreamingClient:
         """Listen for real-time speech events and transcripts from AssemblyAI."""
         try:
             while not self._stopping and self._ws is not None:
-                msg_raw = await self._ws.recv()
-                msg = json.loads(msg_raw)
-                msg_type = msg.get("type", "").lower()
+                try:
+                    msg_raw = await self._ws.recv()
+                except (websockets.ConnectionClosed, asyncio.CancelledError):
+                    break
+                except Exception as e:
+                    if not self._stopping:
+                        logger.warning(f"AssemblyAI recv socket error: {e}")
+                    break
+
+                try:
+                    msg = json.loads(msg_raw)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+
+                msg_type = (msg.get("type") or msg.get("message_type") or "").lower()
 
                 if msg_type == "turn":
                     transcript = msg.get("transcript", "").strip()

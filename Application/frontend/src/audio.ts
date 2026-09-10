@@ -2,9 +2,14 @@ export class VoicePlayer {
   private audioCtx: AudioContext;
   private activeNodes: AudioBufferSourceNode[] = [];
   private nextStartTime = 0;
+  private isCancelled = false;
 
   constructor(private readonly sampleRate = 22050) {
     this.audioCtx = new AudioContext({ sampleRate });
+  }
+
+  resetPlayback() {
+    this.isCancelled = false;
   }
 
   async ensureRunning() {
@@ -24,6 +29,7 @@ export class VoicePlayer {
   }
 
   async playChunk(arrayBuffer: ArrayBuffer) {
+    if (this.isCancelled) return;
     await this.ensureRunning();
     const byteLength = arrayBuffer.byteLength - (arrayBuffer.byteLength % 2);
     if (byteLength === 0) return;
@@ -53,6 +59,7 @@ export class VoicePlayer {
   }
 
   async playBase64Chunk(data: string) {
+    if (this.isCancelled) return;
     const raw = window.atob(data);
     const bytes = new Uint8Array(raw.length);
     for (let i = 0; i < raw.length; i += 1) {
@@ -62,6 +69,7 @@ export class VoicePlayer {
   }
 
   stopImmediately() {
+    this.isCancelled = true;
     for (const node of this.activeNodes) {
       try {
         node.stop();
