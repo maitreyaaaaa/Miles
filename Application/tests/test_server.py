@@ -159,3 +159,42 @@ def test_websocket_barge_in_and_debrief_metrics():
 
         assert report is not None, "Debrief report must be emitted"
         assert report["metrics"]["barge_ins"] >= 1, f"Expected barge_ins >= 1, got {report['metrics']['barge_ins']}"
+
+
+def test_interruption_manager_adversarial_floor_control():
+    """Verify that InterruptionManager suppresses user barge-in while AI interruption is active."""
+    from unittest.mock import MagicMock
+    from src.voice.interruption_manager import InterruptionManager
+
+    mock_tts = MagicMock()
+    mgr = InterruptionManager(tts_client=mock_tts)
+
+    # 1. Normal AI speaking state -> user barge-in should succeed
+    mgr.mark_ai_speaking("Our market cap is five billion dollars.")
+    assert mgr.ai_is_speaking is True
+    event = mgr.handle_user_speech_detected()
+    assert event is not None
+    assert event["by"] == "user"
+    assert event["reason"] == "user_barge_in"
+    assert mock_tts.cancel.called
+
+    # 2. Adversarial interruption state -> user barge-in MUST be suppressed!
+    mock_tts.reset_mock()
+    cut_event = mgr.trigger_ai_interruption("Hold on, cut the buzzwords.", reason="fluff_detected")
+    assert cut_event["by"] == "ai"
+    assert mgr.ai_interruption_active is True
+
+    mgr.mark_ai_speaking("Hold on, cut the buzzwords.")
+    # Inbound user speech attempt while adversary holds floor
+    suppressed_event = mgr.handle_user_speech_detected()
+    assert suppressed_event is None, "User barge-in must be suppressed during adversarial AI interruption"
+    assert not mock_tts.cancel.called, "TTS stream must NOT be cancelled by user speech during AI cut-in"
+
+    # 3. Interruption concludes -> floor released
+    mgr.end_ai_interruption()
+    assert mgr.ai_interruption_active is False
+    mgr.mark_ai_speaking("Now answer: what is your retention rate?")
+    barge_after = mgr.handle_user_speech_detected()
+    assert barge_after is not None
+    assert barge_after["by"] == "user"
+    assert mock_tts.cancel.called

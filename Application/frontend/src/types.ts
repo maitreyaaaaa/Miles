@@ -22,6 +22,7 @@ export type InterruptionEvent = {
   latency_ms: number;
   reason: "user_barge_in" | "fluff_detected" | string;
   spoken_before_cut?: string;
+  phrase?: string;
 };
 
 export type TelemetryEvent = {
@@ -37,6 +38,12 @@ export type TelemetryEvent = {
 export type AiStateEvent = {
   type: "ai_state";
   state: AiState;
+};
+
+export type MicLockEvent = {
+  type: "mic_lock";
+  locked: boolean;
+  reason?: string;
 };
 
 export type DebateReportEvent = {
@@ -65,6 +72,7 @@ export type ServerEvent =
   | InterruptionEvent
   | TelemetryEvent
   | AiStateEvent
+  | MicLockEvent
   | DebateReportEvent
   | AudioChunkEvent
   | DebriefStatusEvent

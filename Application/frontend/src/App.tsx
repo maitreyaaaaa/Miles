@@ -100,6 +100,7 @@ function App() {
   const [aiState, setAiState] = useState<AiState>("idle");
   const [micActive, setMicActive] = useState(false);
   const [micLevel, setMicLevel] = useState(0);
+  const [isMicLocked, setIsMicLocked] = useState(false);
   const [transcripts, setTranscripts] = useState<TranscriptLine[]>([]);
   const [telemetry, setTelemetry] = useState<TelemetryEvent>(initialTelemetry);
   const [lastInterruption, setLastInterruption] = useState<InterruptionEvent | null>(null);
@@ -130,6 +131,7 @@ function App() {
     micRef.current = null;
     setMicActive(false);
     setMicLevel(0);
+    setIsMicLocked(false);
   }, []);
 
   const disconnect = useCallback(() => {
@@ -137,6 +139,7 @@ function App() {
     wsRef.current?.close();
     wsRef.current = null;
     playerRef.current?.stopImmediately();
+    setIsMicLocked(false);
     setConnection("offline");
     setAiState("idle");
     setStatusText("ready");
@@ -235,28 +238,41 @@ function App() {
         }
         break;
       case "interruption":
-        playerRef.current?.stopImmediately();
         setLastInterruption(event);
         setInterruptionCount((count) => count + 1);
-        setAiState("interrupted");
         if (event.by === "user") {
+          playerRef.current?.stopImmediately();
+          setAiState("interrupted");
           setAiSubtitle((prev) =>
             prev ? { ...prev, text: event.spoken_before_cut || prev.text, interrupted: true } : null
           );
         } else if (event.by === "ai") {
+          // Adversarial interjection: AI seizes conversational floor
+          // DO NOT stop the player! TTS stream must play through speakers.
+          micRef.current?.setMuted(true);
+          setIsMicLocked(true);
+          setAiState("speaking");
           setAiSubtitle({
-            text: event.spoken_before_cut || "",
+            text: event.phrase || event.spoken_before_cut || "Hold on...",
             isFinal: true,
             speaker: activeScenario.opponent,
             interrupted: false,
           });
         }
         break;
+      case "mic_lock":
+        micRef.current?.setMuted(event.locked);
+        setIsMicLocked(event.locked);
+        break;
       case "composure_telemetry":
         setTelemetry(event);
         break;
       case "ai_state":
         setAiState(event.state);
+        if (event.state === "listening") {
+          micRef.current?.setMuted(false);
+          setIsMicLocked(false);
+        }
         break;
       case "debrief_status":
         if (event.status === "generating") {
@@ -463,12 +479,12 @@ function App() {
 
       <section className="live-stage">
         {lastInterruption && (
-          <p className="interruption-line">
-            {lastInterruption.by === "user" ? "User Barge-in" : "AI Interruption"} {lastInterruption.latency_ms.toFixed(2)} ms
+          <p className={`interruption-line ${lastInterruption.by === "ai" ? "ai-cut" : "user-barge"}`}>
+            {lastInterruption.by === "user" ? "User Barge-in" : "Adversary Interruption"} {lastInterruption.latency_ms.toFixed(2)} ms
             {lastInterruption.reason && ` • ${lastInterruption.reason.replace(/_/g, " ")}`}
           </p>
         )}
-        <div className={`presence ${aiState}`}>
+        <div className={`presence ${aiState} ${isMicLocked ? "adversary-active" : ""}`}>
           <div className="blob-wrap" aria-hidden="true">
             <div className="blob-shadow" />
             <div className="voice-blob">
@@ -480,7 +496,7 @@ function App() {
             <div className="listen-ring delay" />
           </div>
           <p>{activeScenario.opponent}</p>
-          <strong>{aiState === "speaking" ? "speaking" : aiState === "thinking" ? "thinking" : "listening"}</strong>
+          <strong>{isMicLocked ? "interjecting" : aiState === "speaking" ? "speaking" : aiState === "thinking" ? "thinking" : "listening"}</strong>
         </div>
 
         {/* Live AI Spoken Subtitles */}
@@ -488,12 +504,14 @@ function App() {
           <div
             className={`ai-subtitles ${aiState === "speaking" ? "speaking" : ""} ${
               aiSubtitle.interrupted ? "interrupted" : ""
-            }`}
+            } ${isMicLocked ? "adversary-cut" : ""}`}
           >
             <div className="subtitles-meta">
               <span className="speaker-name">{aiSubtitle.speaker || activeScenario.opponent}</span>
               {aiSubtitle.interrupted ? (
                 <span className="tag interrupted">Interrupted</span>
+              ) : isMicLocked ? (
+                <span className="tag adversary-cut">Adversary Interjection</span>
               ) : !aiSubtitle.isFinal ? (
                 <span className="tag streaming">Speaking</span>
               ) : null}
@@ -505,15 +523,27 @@ function App() {
 
       <footer className="minimal-dock">
         <button
-          className={`mic-button ${micActive ? "recording" : ""}`}
+          className={`mic-button ${micActive ? "recording" : ""} ${isMicLocked ? "locked" : ""}`}
           type="button"
-          title={micActive ? "Stop microphone" : "Start microphone"}
+          title={
+            isMicLocked
+              ? "Adversary speaking — Microphone temporarily locked"
+              : micActive
+              ? "Stop microphone"
+              : "Start microphone"
+          }
           onClick={toggleMic}
-          disabled={connection !== "live" || debriefLoading}
+          disabled={connection !== "live" || debriefLoading || isMicLocked}
         >
-          {micActive ? <MicOff size={20} /> : <Mic size={20} />}
-          <span style={{ "--level": micLevel } as React.CSSProperties} />
+          {isMicLocked ? <MicOff size={20} /> : micActive ? <MicOff size={20} /> : <Mic size={20} />}
+          <span style={{ "--level": isMicLocked ? 0 : micLevel } as React.CSSProperties} />
         </button>
+        {isMicLocked && (
+          <div className="mic-lock-notice">
+            <span className="lock-dot" />
+            <span>Adversary Speaking — Listen</span>
+          </div>
+        )}
         <button
           className={`debrief-button ${debriefLoading ? "loading" : ""}`}
           type="button"

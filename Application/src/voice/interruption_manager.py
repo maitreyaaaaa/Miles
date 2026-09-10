@@ -30,10 +30,19 @@ class InterruptionManager:
 
         self.ai_is_speaking: bool = False
         self.ai_is_thinking: bool = False
+        self.ai_interruption_active: bool = False
         self.speech_start_time: float = 0.0
         self.current_ai_text: str = ""
         self.words_spoken_estimate: int = 0
         self._last_barge_in_latency_ms: float = 0.0
+
+    def start_ai_interruption(self):
+        """Seize conversational floor for an adversarial interjection."""
+        self.ai_interruption_active = True
+
+    def end_ai_interruption(self):
+        """Release conversational floor after adversarial interjection completes."""
+        self.ai_interruption_active = False
 
     def mark_ai_thinking(self):
         """Register that AI is actively generating LLM counter-argument."""
@@ -55,13 +64,18 @@ class InterruptionManager:
         """Register that AI has completed utterance without interruption."""
         self.ai_is_speaking = False
         self.ai_is_thinking = False
+        self.ai_interruption_active = False
         self.current_ai_text = ""
 
     def handle_user_speech_detected(self) -> Optional[Dict[str, Any]]:
         """Triggered immediately when user audio activity or speech onset is detected.
         
         If AI is currently speaking or generating, executes hard barge-in interruption!
+        If AI is currently executing an adversarial interjection, barge-in is suppressed.
         """
+        if self.ai_interruption_active:
+            # Adversary currently has right-of-way; suppress user barge-in
+            return None
         if self.ai_is_thinking:
             self.ai_is_thinking = False
             self.tts_client.cancel()
@@ -121,6 +135,7 @@ class InterruptionManager:
 
     def trigger_ai_interruption(self, interjection_phrase: str, reason: str = "fluff_detected") -> Dict[str, Any]:
         """Trigger an adversarial AI interruption when the user hesitates or waffles."""
+        self.ai_interruption_active = True
         start_cut = time.perf_counter()
         latency_ms = (time.perf_counter() - start_cut) * 1000.0
 

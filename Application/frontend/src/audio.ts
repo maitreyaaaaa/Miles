@@ -87,8 +87,23 @@ export class MicrophoneStreamer {
   private audioContext: AudioContext | null = null;
   private processor: ScriptProcessorNode | null = null;
   private source: MediaStreamAudioSourceNode | null = null;
+  private isMuted = false;
+  private onLevelCallback: ((level: number) => void) | null = null;
+
+  setMuted(muted: boolean) {
+    this.isMuted = muted;
+    if (muted && this.onLevelCallback) {
+      this.onLevelCallback(0);
+    }
+  }
+
+  getMuted(): boolean {
+    return this.isMuted;
+  }
 
   async start(websocket: WebSocket, onLevel: (level: number) => void) {
+    this.isMuted = false;
+    this.onLevelCallback = onLevel;
     this.mediaStream = await navigator.mediaDevices.getUserMedia({
       audio: {
         channelCount: 1,
@@ -105,6 +120,10 @@ export class MicrophoneStreamer {
 
     this.processor.onaudioprocess = (event) => {
       if (websocket.readyState !== WebSocket.OPEN) return;
+      if (this.isMuted) {
+        onLevel(0);
+        return;
+      }
       const inputData = event.inputBuffer.getChannelData(0);
       const pcm16 = new Int16Array(inputData.length);
       let sumSquares = 0;

@@ -194,9 +194,17 @@ async def websocket_debate(
         except Exception:
             pass
 
-    async def stream_ai_audio(text: str, mark_finished_at_end: bool = True):
+    async def stream_ai_audio(
+        text: str,
+        mark_finished_at_end: bool = True,
+        is_adversarial_interruption: bool = False,
+    ):
         """Synthesize and stream audio chunks to browser without stream collisions."""
         async with audio_stream_lock:
+            if is_adversarial_interruption:
+                interruption_mgr.start_ai_interruption()
+                await safe_send_json({"type": "mic_lock", "locked": True, "reason": "ai_interruption"})
+
             interruption_mgr.mark_ai_speaking(text)
             await safe_send_json({"type": "ai_state", "state": "speaking"})
 
@@ -211,14 +219,25 @@ async def websocket_debate(
                     else:
                         break
             finally:
+                if is_adversarial_interruption:
+                    interruption_mgr.end_ai_interruption()
+                    await safe_send_json({"type": "mic_lock", "locked": False})
+
                 if mark_finished_at_end and interruption_mgr.ai_is_speaking:
                     interruption_mgr.mark_ai_finished()
-                    nonlocal ai_speech_end_time
+                    nonlocal ai_speech_end_time, user_speech_start_time, last_partial_time
                     ai_speech_end_time = time.time()
+                    if is_adversarial_interruption:
+                        user_speech_start_time = 0.0
+                        last_partial_time = 0.0
                     await safe_send_json({"type": "ai_state", "state": "listening"})
 
     def perform_barge_in_sync() -> Optional[Dict[str, Any]]:
         """Synchronously execute barge-in cut-off, state truncation, and set was_barge_in flag."""
+        if interruption_mgr.ai_interruption_active:
+            # AI holds adversarial right-of-way; suppress user barge-in
+            return None
+
         nonlocal current_turn_was_barge_in
         current_turn_was_barge_in = True
 
@@ -240,6 +259,9 @@ async def websocket_debate(
     # Callbacks for AssemblyAI STT
     def on_stt_speech_start():
         """User started speaking into mic."""
+        if interruption_mgr.ai_interruption_active:
+            return
+
         nonlocal user_speech_start_time, last_partial_time
         now = time.time()
         if user_speech_start_time <= 0:
@@ -254,6 +276,9 @@ async def websocket_debate(
 
     def on_stt_partial(transcript: str, confidence: float):
         """Interim user speech transcript."""
+        if interruption_mgr.ai_interruption_active:
+            return
+
         nonlocal last_partial_time, user_speech_start_time
         now = time.time()
         if user_speech_start_time <= 0:
@@ -272,7 +297,7 @@ async def websocket_debate(
 
         # Check for adversarial fluff interjection (only if not already speaking)
         interjection = engine.check_fluff_interruption(transcript, mid_hesitation)
-        if interjection and not interruption_mgr.ai_is_speaking and not interruption_mgr.ai_is_thinking:
+        if interjection and not interruption_mgr.ai_is_speaking and not interruption_mgr.ai_is_thinking and not interruption_mgr.ai_interruption_active:
             cut_event = interruption_mgr.trigger_ai_interruption(interjection, reason="fluff_detected")
             asyncio.create_task(safe_send_json(cut_event))
             asyncio.create_task(safe_send_json({
@@ -283,10 +308,12 @@ async def websocket_debate(
                 "is_final": True,
                 "confidence": 1.0,
             }))
-            asyncio.create_task(stream_ai_audio(interjection))
+            asyncio.create_task(stream_ai_audio(interjection, is_adversarial_interruption=True))
 
     def on_stt_final(transcript: str, confidence: float):
         """Finalized user statement."""
+        if interruption_mgr.ai_interruption_active:
+            return
         nonlocal turn_start_time, user_speech_start_time, current_turn_was_barge_in, active_ai_turn_task
         now = time.time()
         start_reference = user_speech_start_time if user_speech_start_time > 0 else turn_start_time
@@ -390,7 +417,7 @@ async def websocket_debate(
         """Proactively monitor user speech flow and trigger interruptions on stalling or rambling."""
         while not stop_event.is_set():
             await asyncio.sleep(0.35)
-            if interruption_mgr.ai_is_speaking or interruption_mgr.ai_is_thinking:
+            if interruption_mgr.ai_is_speaking or interruption_mgr.ai_is_thinking or interruption_mgr.ai_interruption_active:
                 continue
 
             now = time.time()
@@ -413,7 +440,7 @@ async def websocket_debate(
                         "is_final": True,
                         "confidence": 1.0,
                     })
-                    await stream_ai_audio(rambling_cut)
+                    await stream_ai_audio(rambling_cut, is_adversarial_interruption=True)
                     user_speech_start_time = 0.0
                     continue
 
@@ -431,7 +458,7 @@ async def websocket_debate(
                             "is_final": True,
                             "confidence": 1.0,
                         })
-                        await stream_ai_audio(hesitation_cut)
+                        await stream_ai_audio(hesitation_cut, is_adversarial_interruption=True)
                         user_speech_start_time = 0.0
                         continue
 
@@ -451,7 +478,7 @@ async def websocket_debate(
                             "is_final": True,
                             "confidence": 1.0,
                         })
-                        await stream_ai_audio(hesitation_cut)
+                        await stream_ai_audio(hesitation_cut, is_adversarial_interruption=True)
                         ai_speech_end_time = time.time()
                         continue
 
@@ -495,6 +522,10 @@ async def websocket_debate(
             # Process binary audio from browser microphone
             if "bytes" in message and message["bytes"]:
                 pcm_data = message["bytes"]
+
+                # If adversary has seized floor during an adversarial interjection, drop inbound mic bytes
+                if interruption_mgr.ai_interruption_active:
+                    continue
 
                 # Live Audio Energy / VAD for instant barge-in detection
                 rms = calculate_pcm_rms(pcm_data)

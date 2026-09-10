@@ -341,11 +341,29 @@ input:focus {
 .interruption-line {
   position: absolute;
   top: 14px;
-  left: 0;
-  right: 0;
+  left: 50%;
+  transform: translateX(-50%);
   text-align: center;
-  color: #0a0a0a;
-  font-size: 0.92rem;
+  font-size: 0.84rem;
+  font-weight: 600;
+  padding: 4px 14px;
+  border-radius: 999px;
+  white-space: nowrap;
+  background: #f5f5f5;
+  border: 1px solid #e5e5e5;
+  animation: subtitle-pop 200ms ease-out both;
+}
+
+.interruption-line.user-barge {
+  color: #15803d;
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+}
+
+.interruption-line.ai-cut {
+  color: #b45309;
+  background: #fef3c7;
+  border: 1px solid #fde68a;
 }
 
 .presence {
@@ -353,6 +371,13 @@ input:focus {
   justify-items: center;
   gap: 18px;
   text-align: center;
+}
+
+.presence.adversary-active .voice-blob {
+  background: #0a0a0a;
+  border-color: #f59e0b;
+  box-shadow: 0 0 25px rgba(245, 158, 11, 0.35);
+  animation: blob-speak 650ms cubic-bezier(0.5, 0, 0.2, 1) infinite alternate;
 }
 
 .blob-wrap {
@@ -535,6 +560,19 @@ input:focus {
   border: 1px solid #f87171;
 }
 
+.subtitles-meta .tag.adversary-cut {
+  background: #fef3c7;
+  color: #b45309;
+  border: 1px solid #f59e0b;
+  animation: pulse-badge 0.9s infinite alternate;
+}
+
+.ai-subtitles.adversary-cut {
+  border-color: #f59e0b;
+  background: #fffdf5;
+  box-shadow: 0 6px 24px rgba(245, 158, 11, 0.15);
+}
+
 .subtitles-body {
   font-size: 1.15rem;
   line-height: 1.48;
@@ -590,6 +628,42 @@ input:focus {
 .mic-button.recording {
   color: #ffffff;
   background: #0a0a0a;
+}
+
+.mic-button.locked {
+  background: #fef2f2 !important;
+  border-color: #ef4444 !important;
+  color: #dc2626 !important;
+  cursor: not-allowed;
+  animation: mic-locked-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes mic-locked-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4); }
+  50% { box-shadow: 0 0 0 6px rgba(239, 68, 68, 0); }
+}
+
+.mic-lock-notice {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 16px;
+  border-radius: 999px;
+  background: #fef2f2;
+  border: 1px solid #fca5a5;
+  color: #b91c1c;
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  animation: subtitle-pop 200ms ease-out both;
+}
+
+.mic-lock-notice .lock-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #ef4444;
+  animation: pulse-badge 0.8s infinite alternate;
 }
 
 .debrief-button {
