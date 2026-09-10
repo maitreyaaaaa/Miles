@@ -22,6 +22,7 @@ from src.debate.personas import (
     infer_contrarian_thesis,
     list_scenarios,
 )
+from src.debate.dossier import generate_fallback_dossier
 from src.voice.assemblyai_stream import AssemblyAIStreamingClient
 from src.voice.interruption_manager import InterruptionManager
 from src.voice.rime_stream import RimeStreamingTTSClient, pcm_to_wav_bytes
@@ -54,6 +55,7 @@ SESSIONS: Dict[str, DebateEngine] = {}
 class CustomTopicRequest(BaseModel):
     topic: str
     difficulty: Optional[str] = "hard"
+    persona_tone: Optional[str] = "calm_ruthless"
 
 
 def calculate_pcm_rms(pcm_bytes: bytes) -> float:
@@ -151,22 +153,15 @@ async def get_scenarios():
 
 @app.post("/api/scenarios/custom")
 async def setup_custom_topic(req: CustomTopicRequest):
-    """Register and validate a custom debate topic, generating contrarian thesis."""
+    """Register and validate a custom debate topic, generating structured 5-vector battle dossier."""
     topic = req.topic.strip()
     if not topic:
         raise HTTPException(status_code=400, detail="Topic cannot be empty.")
 
-    thesis = infer_contrarian_thesis(topic)
-    persona = build_custom_debate_persona(topic)
-
-    return {
-        "scenario_id": "custom_debate",
-        "topic": topic,
-        "contrarian_thesis": thesis,
-        "persona_name": persona.name,
-        "opening_statement": persona.opening_statement,
-        "difficulty": req.difficulty,
-    }
+    difficulty = req.difficulty or "hard"
+    persona_tone = req.persona_tone or "calm_ruthless"
+    dossier = generate_fallback_dossier(topic, difficulty=difficulty, persona_tone=persona_tone)
+    return dossier
 
 
 @app.get("/api/session/{session_id}/report")

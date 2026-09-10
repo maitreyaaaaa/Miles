@@ -93,3 +93,35 @@ export type PreflightResponse = {
   active_llm: string;
 };
 
+export type AttackVector = {
+  category: string;
+  vector: string;
+};
+
+export type ScoringRubric = {
+  evidence_weight: number;
+  cadence_weight: number;
+  composure_weight: number;
+  brevity_weight: number;
+};
+
+export type DifficultyProfile = {
+  hesitation_threshold_sec: number;
+  rambling_threshold_sec: number;
+  filler_tolerance: number;
+  adversarial_intensity: number;
+};
+
+export type BattleDossier = {
+  scenario_id: string;
+  topic: string;
+  persona_name: string;
+  contrarian_thesis: string;
+  opening_statement: string;
+  attack_vectors: AttackVector[];
+  trap_questions: string[];
+  scoring_rubric: ScoringRubric;
+  difficulty_profile: DifficultyProfile;
+};
+
+

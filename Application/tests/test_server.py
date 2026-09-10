@@ -50,6 +50,10 @@ def test_custom_scenario_endpoint():
     assert data["topic"] == payload["topic"]
     assert len(data["contrarian_thesis"]) > 0
     assert len(data["opening_statement"]) > 0
+    assert len(data["attack_vectors"]) == 5
+    assert len(data["trap_questions"]) == 3
+    assert "scoring_rubric" in data
+    assert "difficulty_profile" in data
 
 
 def test_session_report_endpoint():

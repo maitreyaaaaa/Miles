@@ -2,8 +2,10 @@ import { CircleStop, Mic, MicOff, RotateCcw, ShieldCheck } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MicrophoneStreamer, VoicePlayer } from "./audio";
 import { PreflightModal } from "./components/PreflightModal";
+import { DossierPreview } from "./components/DossierPreview";
 import type {
   AiState,
+  BattleDossier,
   DebateReportEvent,
   Difficulty,
   InterruptionEvent,
@@ -47,12 +49,10 @@ const thinkingWords = [
   "apophenia",
   "palimpsest",
   "susurrus",
+  "liminality",
+  "aporia",
   "numinous",
   "sonder",
-  "anemoia",
-  "liminality",
-  "obliquity",
-  "aporia",
   "quincunx",
 ];
 
@@ -62,9 +62,7 @@ type TopicPrep =
   | {
       status: "ready";
       word: string;
-      thesis: string;
-      opening: string;
-      persona: string;
+      dossier: BattleDossier;
     }
   | { status: "error"; word: string; message: string };
 
@@ -179,18 +177,12 @@ function App() {
           throw new Error(`Custom topic failed with ${response.status}`);
         }
 
-        const payload = await response.json() as {
-          contrarian_thesis: string;
-          opening_statement: string;
-          persona_name: string;
-        };
+        const payload = (await response.json()) as BattleDossier;
 
         setTopicPrep({
           status: "ready",
           word: "calibrated",
-          thesis: payload.contrarian_thesis,
-          opening: payload.opening_statement,
-          persona: payload.persona_name,
+          dossier: payload,
         });
       } catch (error) {
         if (controller.signal.aborted) return;
@@ -432,9 +424,14 @@ function App() {
             />
             {topic.trim() && (
               <div className={`topic-prep ${topicPrep.status}`}>
-                <span>{topicPrep.word}</span>
-                {topicPrep.status === "ready" && (
-                  <p>{topicPrep.thesis}</p>
+                {topicPrep.status === "thinking" && (
+                  <div className="flex items-center justify-center gap-2 text-xs font-mono text-amber-300 py-2">
+                    <span className="animate-pulse">Cognitive calibration:</span>
+                    <strong className="underline decoration-amber-400/50">{topicPrep.word}</strong>
+                  </div>
+                )}
+                {topicPrep.status === "ready" && topicPrep.dossier && (
+                  <DossierPreview dossier={topicPrep.dossier} onStart={startDebate} />
                 )}
                 {topicPrep.status === "error" && (
                   <p>{topicPrep.message}</p>
