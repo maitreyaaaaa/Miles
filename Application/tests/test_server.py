@@ -16,6 +16,19 @@ def test_health_endpoint():
     assert "config" in data
 
 
+def test_preflight_endpoint():
+    response = client.get("/api/preflight")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["backend_status"] == "healthy"
+    assert "assemblyai_status" in data
+    assert "assemblyai_model" in data
+    assert "rime_status" in data
+    assert "rime_model" in data
+    assert "rime_speaker" in data
+    assert "active_llm" in data
+
+
 def test_scenarios_endpoint():
     response = client.get("/api/scenarios")
     assert response.status_code == 200

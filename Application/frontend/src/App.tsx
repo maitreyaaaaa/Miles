@@ -1,6 +1,7 @@
-import { CircleStop, Mic, MicOff, RotateCcw } from "lucide-react";
+import { CircleStop, Mic, MicOff, RotateCcw, ShieldCheck } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MicrophoneStreamer, VoicePlayer } from "./audio";
+import { PreflightModal } from "./components/PreflightModal";
 import type {
   AiState,
   DebateReportEvent,
@@ -116,6 +117,9 @@ function App() {
     speaker?: string;
     interrupted?: boolean;
   } | null>(null);
+  const [showPreflight, setShowPreflight] = useState(() => {
+    return sessionStorage.getItem("miles_preflight_passed") !== "true";
+  });
 
   const wsRef = useRef<WebSocket | null>(null);
   const playerRef = useRef<VoicePlayer | null>(null);
@@ -396,6 +400,16 @@ function App() {
     <main className="home-shell">
         <section className="home-center" aria-label="Start debate">
           <Logo />
+          <div style={{ display: "flex", justifyContent: "center", marginBottom: "0.75rem" }}>
+            <button
+              type="button"
+              className="preflight-trigger-btn"
+              onClick={() => setShowPreflight(true)}
+              title="Run Voice & Audio Preflight Check"
+            >
+              <ShieldCheck size={14} /> Voice Preflight Check
+            </button>
+          </div>
           <button
             className="start-button"
             type="button"
@@ -459,6 +473,11 @@ function App() {
             ))}
           </div>
         </section>
+        <PreflightModal
+          isOpen={showPreflight}
+          onClose={() => setShowPreflight(false)}
+          backendUrl={BACKEND_URL}
+        />
       </main>
     );
   }
@@ -471,6 +490,15 @@ function App() {
           <span>{activeScenario.label}</span>
           <span>{difficulty}</span>
           <span>{statusText}</span>
+          <button
+            type="button"
+            className="preflight-trigger-btn"
+            onClick={() => setShowPreflight(true)}
+            title="Voice & Audio Preflight"
+            style={{ padding: "3px 8px", fontSize: "0.7rem" }}
+          >
+            <ShieldCheck size={11} /> Preflight
+          </button>
         </div>
         <button className="ghost-icon" type="button" title="Back to start" onClick={returnHome}>
           <RotateCcw size={18} aria-hidden="true" />
@@ -582,6 +610,11 @@ function App() {
           onClose={() => setReport(null)}
         />
       )}
+      <PreflightModal
+        isOpen={showPreflight}
+        onClose={() => setShowPreflight(false)}
+        backendUrl={BACKEND_URL}
+      />
     </main>
   );
 }

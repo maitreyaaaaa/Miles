@@ -93,6 +93,53 @@ async def health_check():
     }
 
 
+async def probe_assemblyai() -> str:
+    """Probe AssemblyAI streaming token generation."""
+    if not config.assemblyai_api_key:
+        return "simulation_fallback"
+    try:
+        client = AssemblyAIStreamingClient(api_key=config.assemblyai_api_key)
+        token = await asyncio.wait_for(client.fetch_token(), timeout=3.0)
+        return "connected" if token else "degraded"
+    except Exception as e:
+        logger.warning(f"[Preflight] AssemblyAI probe failed: {e}")
+        return "offline"
+
+
+async def probe_rime() -> str:
+    """Probe Rime Coda connection pool readiness."""
+    if not config.rime_api_key:
+        return "system_fallback"
+    try:
+        client = RimeStreamingTTSClient(api_key=config.rime_api_key)
+        http_client = await client.get_http_client()
+        return "connected" if http_client and not http_client.is_closed else "degraded"
+    except Exception as e:
+        logger.warning(f"[Preflight] Rime probe failed: {e}")
+        return "system_fallback"
+
+
+@app.get("/api/preflight")
+async def get_preflight_status():
+    """Hardware & cloud provider preflight verification for audio sparring."""
+    stt_status = await probe_assemblyai()
+    rime_status = await probe_rime()
+    active_llm = (
+        config.openai_model
+        if config.openai_api_key
+        else (config.gemini_model if config.gemini_api_key else "meta-llama/llama-3.3-70b-instruct")
+    )
+    return {
+        "backend_status": "healthy",
+        "assemblyai_status": stt_status,
+        "assemblyai_model": "universal-3-5-pro",
+        "rime_status": rime_status,
+        "rime_model": config.rime_model_id,
+        "rime_speaker": config.rime_speaker,
+        "active_llm": active_llm,
+    }
+
+
 @app.get("/api/scenarios")
 async def get_scenarios():
     """Retrieve all available debate scenarios and personas."""

@@ -82,3 +82,14 @@ export type TranscriptLine = TranscriptEvent & {
   id: string;
   receivedAt: number;
 };
+
+export type PreflightResponse = {
+  backend_status: string;
+  assemblyai_status: string;
+  assemblyai_model: string;
+  rime_status: string;
+  rime_model: string;
+  rime_speaker: string;
+  active_llm: string;
+};
+
