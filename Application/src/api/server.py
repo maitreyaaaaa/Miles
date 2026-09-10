@@ -23,7 +23,7 @@ from src.debate.personas import (
     list_scenarios,
 )
 from src.debate.dossier import generate_fallback_dossier
-from src.voice.assemblyai_stream import AssemblyAIStreamingClient
+from src.voice.assemblyai_stream import AssemblyAIStreamingClient, SCENARIO_VOCABULARY
 from src.voice.interruption_manager import InterruptionManager
 from src.voice.rime_stream import RimeStreamingTTSClient, pcm_to_wav_bytes
 
@@ -217,6 +217,12 @@ async def websocket_debate(
     last_partial_time = time.time()
     current_turn_was_barge_in = False
 
+    # Audio Intelligence & Conversational Dominance Tracking
+    user_talk_time_sec = 0.0
+    ai_talk_time_sec = 0.0
+    recent_micro_hesitations: List[Dict[str, Any]] = []
+    turn_round = 0
+
     active_ai_turn_task: Optional[asyncio.Task] = None
     monitor_task: Optional[asyncio.Task] = None
     audio_stream_lock = asyncio.Lock()
@@ -236,6 +242,25 @@ async def websocket_debate(
         except Exception as e:
             logger.debug(f"[WebSocket] safe_send_bytes suppressed: {e}")
 
+    async def emit_speech_intelligence():
+        total = user_talk_time_sec + ai_talk_time_sec
+        dom_ratio = round(user_talk_time_sec / total, 2) if total > 0 else 0.50
+        user_pct = max(5, min(95, round(dom_ratio * 100)))
+        ai_pct = 100 - user_pct
+        payload = {
+            "type": "speech_intelligence",
+            "round": turn_round,
+            "user_talk_time_sec": round(user_talk_time_sec, 1),
+            "ai_talk_time_sec": round(ai_talk_time_sec, 1),
+            "dominance_ratio": dom_ratio,
+            "user_pct": user_pct,
+            "ai_pct": ai_pct,
+            "micro_hesitations": recent_micro_hesitations[-5:],
+            "confidence_mean": 0.96,
+            "stress_indicator": "elevated" if len(recent_micro_hesitations) >= 2 else "steady",
+        }
+        await safe_send_json(payload)
+
     async def stream_ai_audio(
         text: str,
         mark_finished_at_end: bool = True,
@@ -243,6 +268,7 @@ async def websocket_debate(
     ):
         """Synthesize and stream audio chunks to browser without stream collisions."""
         async with audio_stream_lock:
+            ai_stream_start = time.time()
             if is_adversarial_interruption:
                 interruption_mgr.start_ai_interruption()
                 await safe_send_json({"type": "mic_lock", "locked": True, "reason": "ai_interruption"})
@@ -261,6 +287,10 @@ async def websocket_debate(
                     else:
                         break
             finally:
+                nonlocal ai_talk_time_sec
+                ai_duration = max(0.4, time.time() - ai_stream_start)
+                ai_talk_time_sec += ai_duration
+
                 if is_adversarial_interruption:
                     interruption_mgr.end_ai_interruption()
                     await safe_send_json({"type": "mic_lock", "locked": False})
@@ -273,6 +303,8 @@ async def websocket_debate(
                         user_speech_start_time = 0.0
                         last_partial_time = 0.0
                     await safe_send_json({"type": "ai_state", "state": "listening"})
+
+                await emit_speech_intelligence()
 
     def perform_barge_in_sync() -> Optional[Dict[str, Any]]:
         """Synchronously execute barge-in cut-off, state truncation, and set was_barge_in flag."""
@@ -387,6 +419,12 @@ async def websocket_debate(
         )
         asyncio.create_task(safe_send_json(snapshot.to_dict()))
 
+        # Update talk-time & speech intelligence
+        nonlocal user_talk_time_sec, turn_round
+        turn_round += 1
+        user_talk_time_sec += duration
+        asyncio.create_task(emit_speech_intelligence())
+
         # Reset turn markers
         current_turn_was_barge_in = False
         user_speech_start_time = 0.0
@@ -395,6 +433,12 @@ async def websocket_debate(
         if active_ai_turn_task and not active_ai_turn_task.done():
             active_ai_turn_task.cancel()
         active_ai_turn_task = asyncio.create_task(execute_ai_turn())
+
+    def on_stt_words(words: List[Dict[str, Any]], hesitations: List[Dict[str, Any]]):
+        """Process word-level timestamps and micro-hesitation events."""
+        if hesitations:
+            recent_micro_hesitations.extend(hesitations)
+            asyncio.create_task(emit_speech_intelligence())
 
     async def execute_ai_turn():
         """Pipelined adversarial generation: stream clauses into TTS immediately for sub-second TTFA."""
@@ -524,13 +568,16 @@ async def websocket_debate(
                         ai_speech_end_time = time.time()
                         continue
 
-    # 2. Connect AssemblyAI in background so opening statement is immediate
+    # 2. Connect AssemblyAI in background with scenario vocabulary boosting
+    scenario_boost = SCENARIO_VOCABULARY.get(scenario, SCENARIO_VOCABULARY.get("vc_pitch", []))
     stt_client = AssemblyAIStreamingClient(
         api_key=config.assemblyai_api_key,
         sample_rate=config.sample_rate,
+        word_boost=scenario_boost,
         on_partial=on_stt_partial,
         on_final=on_stt_final,
         on_speech_start=on_stt_speech_start,
+        on_words=on_stt_words,
     )
 
     async def connect_stt_background():
@@ -551,6 +598,7 @@ async def websocket_debate(
     })
     init_snapshot = engine.scorer.evaluate_turn("", duration_seconds=1.0)
     await safe_send_json(init_snapshot.to_dict())
+    asyncio.create_task(emit_speech_intelligence())
 
     # Stream opening audio and launch active presence monitor
     asyncio.create_task(stream_ai_audio(opening))

@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MicrophoneStreamer, VoicePlayer } from "./audio";
 import { PreflightModal } from "./components/PreflightModal";
 import { DossierPreview } from "./components/DossierPreview";
+import { DominanceHUD } from "./components/DominanceHUD";
 import type {
   AiState,
   BattleDossier,
@@ -11,6 +12,7 @@ import type {
   InterruptionEvent,
   ScenarioId,
   ServerEvent,
+  SpeechIntelligenceEvent,
   TelemetryEvent,
   TranscriptLine,
 } from "./types";
@@ -118,6 +120,7 @@ function App() {
   const [showPreflight, setShowPreflight] = useState(() => {
     return sessionStorage.getItem("miles_preflight_passed") !== "true";
   });
+  const [speechIntel, setSpeechIntel] = useState<SpeechIntelligenceEvent | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
   const playerRef = useRef<VoicePlayer | null>(null);
@@ -285,6 +288,9 @@ function App() {
       case "audio_chunk":
         await playerRef.current?.playBase64Chunk(event.data);
         break;
+      case "speech_intelligence":
+        setSpeechIntel(event);
+        break;
       case "pong":
         break;
     }
@@ -385,6 +391,7 @@ function App() {
     setLastInterruption(null);
     setInterruptionCount(0);
     setAiSubtitle(null);
+    setSpeechIntel(null);
   };
 
   if (!hasStarted) {
@@ -503,6 +510,7 @@ function App() {
       </header>
 
       <section className="live-stage">
+        <DominanceHUD intelligence={speechIntel} opponentName={activeScenario.opponent} />
         {lastInterruption && (
           <p className={`interruption-line ${lastInterruption.by === "ai" ? "ai-cut" : "user-barge"}`}>
             {lastInterruption.by === "user" ? "User Barge-in" : "Adversary Interruption"} {lastInterruption.latency_ms.toFixed(2)} ms

@@ -67,6 +67,28 @@ export type DebriefStatusEvent = {
   message?: string;
 };
 
+export type MicroHesitation = {
+  gap_ms: number;
+  word_before: string;
+  word_after: string;
+  timestamp_ms: number;
+  context: string;
+  severity: "medium" | "high";
+};
+
+export type SpeechIntelligenceEvent = {
+  type: "speech_intelligence";
+  round: number;
+  user_talk_time_sec: number;
+  ai_talk_time_sec: number;
+  dominance_ratio: number;
+  user_pct: number;
+  ai_pct: number;
+  micro_hesitations?: MicroHesitation[];
+  confidence_mean?: number;
+  stress_indicator?: string;
+};
+
 export type ServerEvent =
   | TranscriptEvent
   | InterruptionEvent
@@ -76,6 +98,7 @@ export type ServerEvent =
   | DebateReportEvent
   | AudioChunkEvent
   | DebriefStatusEvent
+  | SpeechIntelligenceEvent
   | { type: "pong" };
 
 export type TranscriptLine = TranscriptEvent & {

@@ -73,3 +73,24 @@ def test_debrief_report():
     assert report["topic"] == "Artificial Intelligence"
     assert report["overall_score"] > 0
     assert len(report["coaching_tips"]) > 0
+
+
+def test_detect_micro_hesitations():
+    from src.voice.assemblyai_stream import detect_micro_hesitations, SCENARIO_VOCABULARY
+
+    words = [
+        {"word": "our", "start": 100, "end": 300, "confidence": 0.98},
+        {"word": "CAC", "start": 1200, "end": 1500, "confidence": 0.99},  # 900ms gap (>750ms)
+        {"word": "is", "start": 1550, "end": 1700, "confidence": 0.95},
+        {"word": "forty", "start": 2600, "end": 2900, "confidence": 0.92},  # 900ms gap
+    ]
+    hesitations = detect_micro_hesitations(words, threshold_ms=750)
+    assert len(hesitations) == 2
+    assert hesitations[0]["word_before"] == "our"
+    assert hesitations[0]["word_after"] == "CAC"
+    assert hesitations[0]["gap_ms"] == 900
+    assert hesitations[1]["gap_ms"] == 900
+
+    assert "vc_pitch" in SCENARIO_VOCABULARY
+    assert "CAC" in SCENARIO_VOCABULARY["vc_pitch"]
+    assert "salary_negotiation" in SCENARIO_VOCABULARY

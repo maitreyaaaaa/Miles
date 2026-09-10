@@ -225,3 +225,19 @@ def test_interruption_manager_adversarial_floor_control():
     assert barge_after is not None
     assert barge_after["by"] == "user"
     assert mock_tts.cancel.called
+
+
+def test_websocket_speech_intelligence_event():
+    with client.websocket_connect("/ws/debate?scenario=vc_pitch&difficulty=hard&audio_format=base64") as ws:
+        intelligence_event = None
+        for _ in range(25):
+            msg = _receive_event(ws)
+            if msg.get("type") == "speech_intelligence":
+                intelligence_event = msg
+                break
+        assert intelligence_event is not None
+        assert "user_talk_time_sec" in intelligence_event
+        assert "ai_talk_time_sec" in intelligence_event
+        assert "dominance_ratio" in intelligence_event
+        assert "user_pct" in intelligence_event
+        assert "ai_pct" in intelligence_event

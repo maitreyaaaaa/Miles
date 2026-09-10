@@ -17,6 +17,42 @@ ASSEMBLYAI_TOKEN_URL = "https://streaming.assemblyai.com/v3/token?expires_in_sec
 ASSEMBLYAI_WS_BASE = "wss://streaming.assemblyai.com/v3/ws"
 
 
+SCENARIO_VOCABULARY: Dict[str, List[str]] = {
+    "vc_pitch": ["CAC", "LTV", "churn rate", "payback window", "EBITDA", "TAM", "SAM", "burn multiple", "runway", "seed round"],
+    "salary_negotiation": ["base salary", "equity grant", "RSUs", "vesting schedule", "cliff", "strike price", "409A valuation", "signing bonus"],
+    "hostile_cross_exam": ["subpoena", "affidavit", "admissibility", "perjury", "chain of custody", "exculpatory", "deposition", "preponderance"],
+    "senior_interview": ["systems design", "distributed systems", "CAP theorem", "eventual consistency", "sharding", "microservices"],
+    "sales_objections": ["procurement", "annual contract value", "SLA", "SOC2 compliance", "seat licensing", "implementation timeline"],
+    "media_crisis": ["data breach", "negligence", "containment", "exfiltration", "forensics", "disclosure"],
+    "hostile_boardroom": ["margin collapse", "activist investor", "capital allocation", "dividend", "governance", "fiduciary duty"],
+    "custom_debate": ["first principles", "second-order effects", "counterparty risk", "empirical evidence", "fallacy"],
+}
+
+
+def detect_micro_hesitations(words: List[Dict[str, Any]], threshold_ms: int = 750) -> List[Dict[str, Any]]:
+    """Detect micro-hesitation gaps (>750ms silence between consecutive words within single utterance)."""
+    hesitations = []
+    if not words or len(words) < 2:
+        return hesitations
+
+    for i in range(len(words) - 1):
+        w1 = words[i]
+        w2 = words[i + 1]
+        w1_end = w1.get("end", 0)
+        w2_start = w2.get("start", 0)
+        gap = w2_start - w1_end
+        if gap > threshold_ms:
+            hesitations.append({
+                "gap_ms": gap,
+                "word_before": w1.get("word", ""),
+                "word_after": w2.get("word", ""),
+                "timestamp_ms": w1_end,
+                "context": f"{w1.get('word', '')} [{gap}ms] {w2.get('word', '')}",
+                "severity": "high" if gap > 1200 else "medium",
+            })
+    return hesitations
+
+
 @dataclass
 class AssemblyAITurnEvent:
     text: str
@@ -29,24 +65,28 @@ class AssemblyAIStreamingClient:
     """Real-time Universal-Streaming v3 client for AssemblyAI.
     
     Powers sub-200ms speech-to-text, partial transcripts, speech onset detection,
-    and word-level filler detection for composure intelligence.
+    word-level timestamps, micro-hesitations, vocabulary boosting, and composure intelligence.
     """
 
     def __init__(
         self,
         api_key: str,
         sample_rate: int = 16000,
+        word_boost: Optional[List[str]] = None,
         on_partial: Optional[Callable[[str, float], None]] = None,
         on_final: Optional[Callable[[str, float], None]] = None,
         on_speech_start: Optional[Callable[[], None]] = None,
         on_filler_detected: Optional[Callable[[str], None]] = None,
+        on_words: Optional[Callable[[List[Dict[str, Any]], List[Dict[str, Any]]], None]] = None,
     ):
         self.api_key = api_key
         self.sample_rate = sample_rate
+        self.word_boost = word_boost or []
         self.on_partial = on_partial
         self.on_final = on_final
         self.on_speech_start = on_speech_start
         self.on_filler_detected = on_filler_detected
+        self.on_words = on_words
 
         self._ws: Optional[websockets.WebSocketClientProtocol] = None
         self._stopping = False
@@ -86,6 +126,10 @@ class AssemblyAIStreamingClient:
                 f"&encoding=pcm_s16le"
                 f"&speech_model=universal-3-5-pro"
             )
+            if self.word_boost:
+                import urllib.parse
+                boost_param = urllib.parse.quote(json.dumps(self.word_boost))
+                ws_url += f"&word_boost={boost_param}"
 
             logger.info("Connecting to AssemblyAI Universal-Streaming v3...")
             self._ws = await websockets.connect(
@@ -144,6 +188,11 @@ class AssemblyAIStreamingClient:
                     transcript = msg.get("transcript", "").strip()
                     is_final = bool(msg.get("end_of_turn")) or bool(msg.get("turn_is_formatted"))
                     confidence = float(msg.get("confidence", 0.95))
+                    words = msg.get("words", [])
+
+                    hesitations = detect_micro_hesitations(words, threshold_ms=750)
+                    if self.on_words and (words or hesitations):
+                        self.on_words(words, hesitations)
 
                     if transcript:
                         # User started speaking -> Trigger immediate barge-in callback!
