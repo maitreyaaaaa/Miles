@@ -139,121 +139,151 @@ export const PreflightModal: React.FC<PreflightModalProps> = ({ isOpen, onClose,
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md p-4 animate-fade-in">
-      <div className="relative w-full max-w-lg rounded-2xl border border-white/10 bg-[#0d0f12] p-6 shadow-2xl text-white">
-        <div className="flex items-center justify-between pb-4 border-b border-white/10">
-          <div className="flex items-center gap-3">
-            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-emerald-500/10 text-emerald-400">
-              <ShieldCheck className="h-5 w-5" />
+    <div className="preflight-overlay" role="presentation" onClick={onClose}>
+      <div
+        className="preflight-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Voice Preflight Check"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="preflight-header">
+          <div className="preflight-title-wrap">
+            <div className="preflight-icon-badge">
+              <ShieldCheck size={20} />
             </div>
-            <div>
-              <h2 className="text-lg font-semibold tracking-tight">Voice Preflight Check</h2>
-              <p className="text-xs text-white/50">Verify audio hardware & cloud inference pipelines</p>
+            <div className="preflight-titles">
+              <h2>Voice Preflight Check</h2>
+              <p>Verify audio hardware &amp; cloud inference pipelines</p>
             </div>
           </div>
-          <button onClick={onClose} className="rounded-lg p-1.5 text-white/40 hover:bg-white/5 hover:text-white transition">
-            <X className="h-4 w-4" />
+          <button
+            type="button"
+            onClick={onClose}
+            className="preflight-close-btn"
+            title="Close modal"
+          >
+            <X size={16} />
           </button>
         </div>
 
-        <div className="mt-5 space-y-4 text-sm">
+        <div className="preflight-body">
           {/* Microphone Check */}
-          <div className="flex flex-col gap-2 rounded-xl border border-white/5 bg-white/[0.02] p-3.5">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2.5">
-                <Mic className="h-4 w-4 text-emerald-400" />
-                <span className="font-medium">Microphone Input</span>
+          <div className="preflight-check-card">
+            <div className="preflight-row">
+              <div className="preflight-item-left">
+                <Mic size={18} className="preflight-item-icon" />
+                <div>
+                  <div className="preflight-item-label">Microphone Input</div>
+                  <div className="preflight-item-sub">Speak to calibrate input sensitivity</div>
+                </div>
               </div>
-              <span className={`text-xs px-2 py-0.5 rounded-full font-mono ${micActive ? "bg-emerald-500/20 text-emerald-400" : "bg-white/5 text-white/40"}`}>
+              <span className={`preflight-status-badge ${micActive ? "active" : ""}`}>
                 {micActive ? "Signal OK" : "Speak to test"}
               </span>
             </div>
-            <div className="h-2 w-full overflow-hidden rounded-full bg-white/10">
+            <div className="preflight-meter-track">
               <div
-                className="h-full bg-emerald-500 transition-all duration-75"
+                className="preflight-meter-fill"
                 style={{ width: `${Math.max(5, micLevel)}%` }}
               />
             </div>
           </div>
 
           {/* Speaker Check */}
-          <div className="flex items-center justify-between rounded-xl border border-white/5 bg-white/[0.02] p-3.5">
-            <div className="flex items-center gap-2.5">
-              <Volume2 className="h-4 w-4 text-emerald-400" />
-              <div>
-                <div className="font-medium">Speaker Output</div>
-                <div className="text-xs text-white/40">Plays 440Hz / 880Hz dual-tone chime</div>
+          <div className="preflight-check-card">
+            <div className="preflight-row">
+              <div className="preflight-item-left">
+                <Volume2 size={18} className="preflight-item-icon" />
+                <div>
+                  <div className="preflight-item-label">Speaker Output</div>
+                  <div className="preflight-item-sub">Plays 440Hz / 880Hz dual-tone chime</div>
+                </div>
               </div>
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={playChime}
-                className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-xs hover:bg-white/10 transition"
-              >
-                <Play className="h-3 w-3" /> Play
-              </button>
-              <button
-                onClick={() => setSpeakerTested(true)}
-                className={`rounded-lg px-2.5 py-1 text-xs transition ${
-                  speakerTested ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30" : "border border-white/10 bg-white/5 hover:bg-white/10"
-                }`}
-              >
-                {speakerTested ? "✓ Confirmed" : "I heard it"}
-              </button>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <button
+                  type="button"
+                  onClick={playChime}
+                  className="preflight-action-pill"
+                >
+                  <Play size={12} /> Play
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSpeakerTested(true)}
+                  className={`preflight-action-pill ${speakerTested ? "confirmed" : ""}`}
+                >
+                  {speakerTested ? "✓ Confirmed" : "I heard it"}
+                </button>
+              </div>
             </div>
           </div>
 
           {/* Cloud Health Diagnostics */}
-          <div className="rounded-xl border border-white/5 bg-white/[0.02] p-3.5 space-y-2">
-            <div className="flex items-center justify-between text-xs text-white/50 mb-1">
-              <span>Cloud Engine Pipeline</span>
-              <button onClick={fetchStatus} disabled={loading} className="hover:text-white flex items-center gap-1">
-                <RefreshCw className={`h-3 w-3 ${loading ? "animate-spin" : ""}`} /> Refresh
+          <div className="preflight-check-card">
+            <div className="preflight-row" style={{ marginBottom: "2px" }}>
+              <span className="preflight-item-sub" style={{ textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 600 }}>
+                Cloud Engine Pipeline
+              </span>
+              <button
+                type="button"
+                onClick={fetchStatus}
+                disabled={loading}
+                className="preflight-refresh-btn"
+                title="Re-probe cloud services"
+              >
+                <RefreshCw size={12} className={loading ? "spin-icon" : ""} /> Refresh
               </button>
             </div>
-            <div className="grid grid-cols-2 gap-2 text-xs font-mono">
-              <div className="flex items-center justify-between rounded bg-white/[0.03] px-2.5 py-1.5">
-                <span className="text-white/60">Backend:</span>
-                <span className="text-emerald-400 font-semibold">{preflightData?.backend_status || "Checking..."}</span>
+            <div className="preflight-grid">
+              <div className="preflight-grid-cell">
+                <span className="preflight-cell-label">Backend:</span>
+                <span className={`preflight-cell-val ${preflightData?.backend_status === "healthy" ? "healthy" : ""}`}>
+                  {preflightData?.backend_status || "Checking..."}
+                </span>
               </div>
-              <div className="flex items-center justify-between rounded bg-white/[0.03] px-2.5 py-1.5">
-                <span className="text-white/60">AssemblyAI v3:</span>
-                <span className={preflightData?.assemblyai_status === "connected" ? "text-emerald-400" : "text-amber-400"}>
+              <div className="preflight-grid-cell">
+                <span className="preflight-cell-label">AssemblyAI v3:</span>
+                <span className={`preflight-cell-val ${preflightData?.assemblyai_status === "connected" ? "connected" : "warning"}`}>
                   {preflightData?.assemblyai_status || "Checking..."}
                 </span>
               </div>
-              <div className="flex items-center justify-between rounded bg-white/[0.03] px-2.5 py-1.5">
-                <span className="text-white/60">Rime Coda:</span>
-                <span className={preflightData?.rime_status === "connected" ? "text-emerald-400" : "text-amber-400"}>
+              <div className="preflight-grid-cell">
+                <span className="preflight-cell-label">Rime Coda:</span>
+                <span className={`preflight-cell-val ${preflightData?.rime_status === "connected" ? "connected" : "warning"}`}>
                   {preflightData?.rime_status || "Checking..."}
                 </span>
               </div>
-              <div className="flex items-center justify-between rounded bg-white/[0.03] px-2.5 py-1.5">
-                <span className="text-white/60">Active LLM:</span>
-                <span className="text-white/80 truncate max-w-[90px]">{preflightData?.active_llm?.split("/").pop() || "Llama 3.3"}</span>
+              <div className="preflight-grid-cell">
+                <span className="preflight-cell-label">Active LLM:</span>
+                <span className="preflight-cell-val truncate">
+                  {preflightData?.active_llm?.split("/").pop() || "Llama 3.3"}
+                </span>
               </div>
             </div>
             {error && (
-              <div className="flex items-center gap-2 text-xs text-rose-400 bg-rose-500/10 p-2 rounded">
-                <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+              <div className="preflight-error-banner">
+                <AlertTriangle size={14} style={{ flexShrink: 0 }} />
                 <span>{error}</span>
               </div>
             )}
           </div>
         </div>
 
-        <div className="mt-6 flex items-center justify-between pt-4 border-t border-white/10">
+        <div className="preflight-footer">
           <button
+            type="button"
             onClick={handlePassAndClose}
-            className="text-xs text-white/40 hover:text-white/80 transition"
+            className="preflight-skip-btn"
           >
             Skip &amp; Start
           </button>
           <button
+            type="button"
             onClick={handlePassAndClose}
-            className="flex items-center gap-2 rounded-xl bg-emerald-500 px-5 py-2 text-sm font-semibold text-black hover:bg-emerald-400 shadow-lg shadow-emerald-500/20 transition"
+            className="preflight-submit-btn"
           >
-            <CheckCircle2 className="h-4 w-4" /> Start Sparring Session
+            <CheckCircle2 size={16} /> Start Sparring Session
           </button>
         </div>
       </div>

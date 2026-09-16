@@ -12,30 +12,30 @@ export const DominanceHUD: React.FC<DominanceHUDProps> = ({ intelligence, oppone
   const hasHesitation = (intelligence?.micro_hesitations?.length ?? 0) > 0;
 
   return (
-    <div className="w-full max-w-md mx-auto my-2 px-3 py-2 rounded-xl bg-black/30 border border-white/5 backdrop-blur-sm text-xs font-mono select-none">
-      <div className="flex items-center justify-between mb-1 text-[11px] text-white/70">
-        <span className="flex items-center gap-1.5 font-medium">
-          <span className="h-2 w-2 rounded-full bg-emerald-400" />
-          You: <span className="text-white font-semibold">{userPct}%</span>
+    <div className="dominance-hud">
+      <div className="dominance-hud-row">
+        <span className="dominance-hud-speaker">
+          <span className="dominance-dot user" />
+          <span>You: <strong style={{ color: "#ffffff" }}>{userPct}%</strong></span>
         </span>
         {hasHesitation && (
-          <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20">
+          <span className="dominance-hesitation-badge">
             Hesitation &gt;750ms
           </span>
         )}
-        <span className="flex items-center gap-1.5 font-medium">
-          {opponentName}: <span className="text-white font-semibold">{aiPct}%</span>
-          <span className="h-2 w-2 rounded-full bg-sky-400" />
+        <span className="dominance-hud-speaker">
+          <span>{opponentName}: <strong style={{ color: "#ffffff" }}>{aiPct}%</strong></span>
+          <span className="dominance-dot ai" />
         </span>
       </div>
 
-      <div className="h-1.5 w-full flex rounded-full overflow-hidden bg-white/10">
+      <div className="dominance-hud-bar">
         <div
-          className="h-full bg-emerald-500 transition-all duration-300 ease-out"
+          className="dominance-bar-user"
           style={{ width: `${userPct}%` }}
         />
         <div
-          className="h-full bg-sky-500 transition-all duration-300 ease-out"
+          className="dominance-bar-ai"
           style={{ width: `${aiPct}%` }}
         />
       </div>
