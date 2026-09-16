@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
 import logging
 import math
@@ -51,6 +52,36 @@ app.add_middleware(
 
 # In-memory registry of debate sessions
 SESSIONS: Dict[str, DebateEngine] = {}
+
+
+def install_stream_shutdown_filter() -> None:
+    """Suppress known provider async-generator noise when clients disconnect mid-stream."""
+    loop = asyncio.get_running_loop()
+    if getattr(loop, "_miles_shutdown_filter_installed", False):
+        return
+
+    previous_handler = loop.get_exception_handler()
+
+    def handle_exception(loop: asyncio.AbstractEventLoop, context: Dict[str, Any]) -> None:
+        exception = context.get("exception")
+        message = str(context.get("message", ""))
+        if (
+            isinstance(exception, RuntimeError)
+            and "asynchronous generator" in message
+            and (
+                "generator didn't stop after athrow" in str(exception)
+                or "aclose(): asynchronous generator is already running" in str(exception)
+            )
+        ):
+            logger.debug(f"[WebSocket] Suppressed provider stream shutdown noise: {exception}")
+            return
+        if previous_handler:
+            previous_handler(loop, context)
+        else:
+            loop.default_exception_handler(context)
+
+    loop.set_exception_handler(handle_exception)
+    setattr(loop, "_miles_shutdown_filter_installed", True)
 
 
 class CustomTopicRequest(BaseModel):
@@ -198,6 +229,7 @@ async def websocket_debate(
     audio_format: str = Query("binary"),
 ):
     """Full-Duplex live audio & telemetry stream for Miles."""
+    install_stream_shutdown_filter()
     await websocket.accept()
 
     # 1. Initialize Debate Engine & Services
@@ -496,31 +528,32 @@ async def websocket_debate(
         first_clause = True
 
         try:
-            async for clause in engine.generate_adversary_clauses():
-                if stop_event.is_set():
-                    return
+            async with contextlib.aclosing(engine.generate_adversary_clauses()) as clause_stream:
+                async for clause in clause_stream:
+                    if stop_event.is_set():
+                        return
 
-                accumulated_clauses.append(clause)
-                current_full_text = " ".join(accumulated_clauses)
+                    accumulated_clauses.append(clause)
+                    current_full_text = " ".join(accumulated_clauses)
 
-                # Send streaming subtitle text to UI immediately
-                await safe_send_json({
-                    "type": "transcript",
-                    "role": "ai",
-                    "speaker": engine.persona.name,
-                    "text": current_full_text,
-                    "is_final": False,
-                    "confidence": 1.0,
-                })
+                    # Send streaming subtitle text to UI immediately
+                    await safe_send_json({
+                        "type": "transcript",
+                        "role": "ai",
+                        "speaker": engine.persona.name,
+                        "text": current_full_text,
+                        "is_final": False,
+                        "confidence": 1.0,
+                    })
 
-                if first_clause:
-                    interruption_mgr.mark_ai_thinking_done()
-                    first_clause = False
-                    await emit_turn_telemetry(calc_trigger)
+                    if first_clause:
+                        interruption_mgr.mark_ai_thinking_done()
+                        first_clause = False
+                        await emit_turn_telemetry(calc_trigger)
 
-                # Stream this clause to TTS and browser
-                if not stop_event.is_set():
-                    await stream_ai_audio(clause, mark_finished_at_end=False)
+                    # Stream this clause to TTS and browser
+                    if not stop_event.is_set():
+                        await stream_ai_audio(clause, mark_finished_at_end=False)
 
             # Mark final completed text
             final_text = " ".join(accumulated_clauses).strip()
@@ -653,7 +686,7 @@ async def websocket_debate(
     asyncio.create_task(emit_turn_telemetry(opening_start))
 
     # Stream opening audio and launch active presence monitor
-    asyncio.create_task(stream_ai_audio(opening))
+    active_ai_turn_task = asyncio.create_task(stream_ai_audio(opening))
     monitor_task = asyncio.create_task(monitor_user_presence_loop())
 
     # 4. Main WebSocket Message Pump
@@ -735,9 +768,14 @@ async def websocket_debate(
         stop_event.set()
         if monitor_task and not monitor_task.done():
             monitor_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await monitor_task
         if active_ai_turn_task and not active_ai_turn_task.done():
             active_ai_turn_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await active_ai_turn_task
         if stt_client:
             await stt_client.stop()
         tts_client.cancel()
         await tts_client.close()
+        await engine.llm_client.close()

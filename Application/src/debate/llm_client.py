@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import random
@@ -145,6 +146,15 @@ class LLMClient:
         elif self.provider == "anthropic" and config.anthropic_api_key:
             self.model = self.model or "claude-3-5-sonnet-latest"
 
+    async def close(self) -> None:
+        """Close provider clients and connection pools."""
+        if self._openai_client:
+            close_client = getattr(self._openai_client, "close", None) or getattr(self._openai_client, "aclose", None)
+            if close_client:
+                result = close_client()
+                if hasattr(result, "__await__"):
+                    await result
+
     async def stream_turn(
         self,
         messages: List[Dict[str, str]],
@@ -180,32 +190,22 @@ class LLMClient:
         buffer = ""
         is_first_chunk = True
 
-        async for token in self.stream_turn(messages, system_prompt, temperature, max_tokens):
-            buffer += token
+        async with contextlib.aclosing(self.stream_turn(messages, system_prompt, temperature, max_tokens)) as token_stream:
+            async for token in token_stream:
+                buffer += token
 
-            # Strip sycophancy on the fly from the leading tokens
-            if is_first_chunk:
-                for pat in SYCOPHANTIC_PREFIX_PATTERNS:
-                    buffer = pat.sub("", buffer)
+                # Strip sycophancy on the fly from the leading tokens
+                if is_first_chunk:
+                    for pat in SYCOPHANTIC_PREFIX_PATTERNS:
+                        buffer = pat.sub("", buffer)
 
-            # Check for punctuation boundary (. ! ? -- or comma after >= 5 words)
-            words = buffer.strip().split()
+                # Check for punctuation boundary (. ! ? -- or comma after >= 5 words)
+                words = buffer.strip().split()
 
-            # Sentence boundary (. ! ? --)
-            match = re.search(r"([.!?]+|\-\-)\s*", buffer)
-            if match:
-                split_idx = match.end()
-                clause = buffer[:split_idx].strip()
-                buffer = buffer[split_idx:]
-                if clause:
-                    cleaned_clause = clean_spoken_text(clause)
-                    if cleaned_clause:
-                        yield cleaned_clause
-                        is_first_chunk = False
-            elif len(words) >= 6 and re.search(r"[,;:]\s+", buffer):
-                comma_match = re.search(r"[,;:]\s+", buffer)
-                if comma_match:
-                    split_idx = comma_match.end()
+                # Sentence boundary (. ! ? --)
+                match = re.search(r"([.!?]+|\-\-)\s*", buffer)
+                if match:
+                    split_idx = match.end()
                     clause = buffer[:split_idx].strip()
                     buffer = buffer[split_idx:]
                     if clause:
@@ -213,14 +213,25 @@ class LLMClient:
                         if cleaned_clause:
                             yield cleaned_clause
                             is_first_chunk = False
-            elif len(words) >= 12:
-                # Force split long clause to prevent TTS latency accumulation
-                clause = " ".join(words[:8])
-                buffer = " ".join(words[8:])
-                cleaned_clause = clean_spoken_text(clause)
-                if cleaned_clause:
-                    yield cleaned_clause
-                    is_first_chunk = False
+                elif len(words) >= 6 and re.search(r"[,;:]\s+", buffer):
+                    comma_match = re.search(r"[,;:]\s+", buffer)
+                    if comma_match:
+                        split_idx = comma_match.end()
+                        clause = buffer[:split_idx].strip()
+                        buffer = buffer[split_idx:]
+                        if clause:
+                            cleaned_clause = clean_spoken_text(clause)
+                            if cleaned_clause:
+                                yield cleaned_clause
+                                is_first_chunk = False
+                elif len(words) >= 12:
+                    # Force split long clause to prevent TTS latency accumulation
+                    clause = " ".join(words[:8])
+                    buffer = " ".join(words[8:])
+                    cleaned_clause = clean_spoken_text(clause)
+                    if cleaned_clause:
+                        yield cleaned_clause
+                        is_first_chunk = False
 
         if buffer.strip():
             remaining = clean_spoken_text(buffer.strip())
@@ -253,6 +264,7 @@ class LLMClient:
             role = "user" if m.get("role") == "user" else "assistant"
             payload_messages.append({"role": role, "content": m.get("content", "")})
 
+        stream = None
         try:
             stream = await self._openai_client.chat.completions.create(
                 model=self.model or config.openai_model or "gpt-4o-mini",
@@ -268,6 +280,12 @@ class LLMClient:
             logger.error(f"OpenAI stream error: {e}. Falling back to heuristic mock.")
             async for token in self._stream_heuristic_mock(messages, system_prompt):
                 yield token
+        finally:
+            close_stream = getattr(stream, "close", None)
+            if close_stream:
+                result = close_stream()
+                if hasattr(result, "__await__"):
+                    await result
 
     async def _stream_gemini(
         self,

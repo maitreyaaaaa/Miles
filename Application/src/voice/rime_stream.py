@@ -77,6 +77,10 @@ class RimeStreamingTTSClient:
 
     async def close(self):
         """Clean up connection pool on shutdown."""
+        if self._active_stream_task and not self._active_stream_task.done():
+            self._active_stream_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._active_stream_task
         if self._http_client and not self._http_client.is_closed:
             await self._http_client.aclose()
 
@@ -123,10 +127,11 @@ class RimeStreamingTTSClient:
 
         async def _produce() -> None:
             try:
-                async for chunk in source:
-                    if self._is_cancelled or self._cancel_event.is_set():
-                        break
-                    await queue.put(chunk)
+                async with contextlib.aclosing(source):
+                    async for chunk in source:
+                        if self._is_cancelled or self._cancel_event.is_set():
+                            break
+                        await queue.put(chunk)
             except asyncio.CancelledError:
                 pass
             except Exception as exc:
@@ -163,6 +168,8 @@ class RimeStreamingTTSClient:
         finally:
             if not producer.done():
                 producer.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await producer
             self._active_stream_task = None
 
     async def _stream_rime(self, text: str, speed_alpha: float) -> AsyncIterator[bytes]:
