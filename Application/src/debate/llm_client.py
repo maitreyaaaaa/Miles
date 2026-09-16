@@ -213,7 +213,7 @@ class LLMClient:
                         if cleaned_clause:
                             yield cleaned_clause
                             is_first_chunk = False
-                elif len(words) >= 6 and re.search(r"[,;:]\s+", buffer):
+                elif (len(words) >= 4 if is_first_chunk else len(words) >= 6) and re.search(r"[,;:]\s+", buffer):
                     comma_match = re.search(r"[,;:]\s+", buffer)
                     if comma_match:
                         split_idx = comma_match.end()
@@ -224,10 +224,11 @@ class LLMClient:
                             if cleaned_clause:
                                 yield cleaned_clause
                                 is_first_chunk = False
-                elif len(words) >= 12:
+                elif len(words) >= (7 if is_first_chunk else 12):
                     # Force split long clause to prevent TTS latency accumulation
-                    clause = " ".join(words[:8])
-                    buffer = " ".join(words[8:])
+                    split_count = 5 if is_first_chunk else 8
+                    clause = " ".join(words[:split_count])
+                    buffer = " ".join(words[split_count:])
                     cleaned_clause = clean_spoken_text(clause)
                     if cleaned_clause:
                         yield cleaned_clause

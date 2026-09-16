@@ -85,11 +85,21 @@ class DebateEngine:
         heavy_buzzwords = len(buzzwords) >= 1 if self.difficulty in ("hard", "ruthless") else 2
 
         if (too_many_fillers or heavy_buzzwords) and self.persona.fluff_interjections:
-            interjection = random.choice(self.persona.fluff_interjections)
+            interjection = self._ensure_reflex_prefix(random.choice(self.persona.fluff_interjections))
             self.scorer.record_ai_interruption()
             logger.info(f"[DebateEngine] AI Interruption triggered (Fillers/Buzzwords): '{interjection}'")
             return interjection
         return None
+
+    def _ensure_reflex_prefix(self, text: str) -> str:
+        """Guarantee that every AI cut-in seizes the conversational floor with an authentic verbal reflex."""
+        import random
+        raw = text.strip()
+        lowered = raw.lower()
+        if any(lowered.startswith(p) for p in ("wait", "stop", "hold on", "hold up", "listen")):
+            return raw
+        prefix = random.choice(["Stop.", "Wait.", "Hold on.", "Stop right there.", "Wait a second."])
+        return f"{prefix} {raw}"
 
     def check_hesitation_interruption(self, hesitation_sec: float) -> Optional[str]:
         """Trigger cut-in when user freezes or stays silent for too long (> 2.0s)."""
@@ -98,7 +108,7 @@ class DebateEngine:
         if hesitation_sec >= threshold:
             pool = self.persona.hesitation_interjections or self.persona.fluff_interjections
             if pool:
-                interjection = random.choice(pool)
+                interjection = self._ensure_reflex_prefix(random.choice(pool))
                 self.scorer.record_ai_interruption()
                 logger.info(f"[DebateEngine] AI Interruption triggered (Hesitation {hesitation_sec:.1f}s): '{interjection}'")
                 return interjection
@@ -111,7 +121,7 @@ class DebateEngine:
         if duration_sec >= threshold:
             pool = self.persona.rambling_interjections or self.persona.fluff_interjections
             if pool:
-                interjection = random.choice(pool)
+                interjection = self._ensure_reflex_prefix(random.choice(pool))
                 self.scorer.record_ai_interruption()
                 logger.info(f"[DebateEngine] AI Interruption triggered (Rambling {duration_sec:.1f}s): '{interjection}'")
                 return interjection

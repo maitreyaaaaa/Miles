@@ -264,6 +264,7 @@ async def websocket_debate(
     last_partial_time = time.time()
     current_turn_was_barge_in = False
     last_barge_in_latency_ms = 0.018
+    last_ai_interruption_time = 0.0
 
     # Audio Intelligence & Conversational Dominance Tracking
     user_talk_time_sec = 0.0
@@ -360,6 +361,8 @@ async def websocket_debate(
                 ai_talk_time_sec += ai_duration
 
                 if is_adversarial_interruption:
+                    nonlocal last_ai_interruption_time
+                    last_ai_interruption_time = time.time()
                     interruption_mgr.end_ai_interruption()
                     await safe_send_json({"type": "mic_lock", "locked": False})
 
@@ -441,6 +444,10 @@ async def websocket_debate(
         # Check for adversarial fluff interjection (only if not already speaking)
         interjection = engine.check_fluff_interruption(transcript, mid_hesitation)
         if interjection and not interruption_mgr.ai_is_speaking and not interruption_mgr.ai_is_thinking and not interruption_mgr.ai_interruption_active:
+            interruption_mgr.start_ai_interruption()
+            asyncio.create_task(safe_send_json({"type": "mic_lock", "locked": True, "reason": "ai_interruption"}))
+            asyncio.create_task(safe_send_json({"type": "ai_state", "state": "speaking"}))
+
             engine.record_ai_cut_in("fluff_detected", interjection)
             cut_event = interruption_mgr.trigger_ai_interruption(interjection, reason="fluff_detected")
             asyncio.create_task(safe_send_json(cut_event))
@@ -456,7 +463,9 @@ async def websocket_debate(
 
     def on_stt_final(transcript: str, confidence: float):
         """Finalized user statement."""
-        if interruption_mgr.ai_interruption_active:
+        nonlocal last_ai_interruption_time
+        if interruption_mgr.ai_interruption_active or (time.time() - last_ai_interruption_time < 0.8):
+            logger.info("[on_stt_final] Suppressing trailing user speech finalize received during/after AI interruption.")
             return
         nonlocal turn_start_time, user_speech_start_time, current_turn_was_barge_in, active_ai_turn_task
         now = time.time()
@@ -596,6 +605,9 @@ async def websocket_debate(
                 # 1. Rambling trigger (>11s without stopping)
                 rambling_cut = engine.check_rambling_interruption(speech_duration)
                 if rambling_cut:
+                    interruption_mgr.start_ai_interruption()
+                    await safe_send_json({"type": "mic_lock", "locked": True, "reason": "ai_interruption"})
+                    await safe_send_json({"type": "ai_state", "state": "speaking"})
                     engine.record_ai_cut_in("rambling_detected", rambling_cut)
                     cut_event = interruption_mgr.trigger_ai_interruption(rambling_cut, reason="rambling_detected")
                     await safe_send_json(cut_event)
@@ -607,14 +619,18 @@ async def websocket_debate(
                         "is_final": True,
                         "confidence": 1.0,
                     })
-                    await stream_ai_audio(rambling_cut, is_adversarial_interruption=True)
                     user_speech_start_time = 0.0
+                    last_partial_time = 0.0
+                    await stream_ai_audio(rambling_cut, is_adversarial_interruption=True)
                     continue
 
                 # 2. Mid-speech freeze (>2.0s silence mid-answer)
                 if mid_speech_pause >= 2.0:
                     hesitation_cut = engine.check_hesitation_interruption(mid_speech_pause)
                     if hesitation_cut:
+                        interruption_mgr.start_ai_interruption()
+                        await safe_send_json({"type": "mic_lock", "locked": True, "reason": "ai_interruption"})
+                        await safe_send_json({"type": "ai_state", "state": "speaking"})
                         engine.record_ai_cut_in("hesitation_detected", hesitation_cut)
                         cut_event = interruption_mgr.trigger_ai_interruption(hesitation_cut, reason="hesitation_detected")
                         await safe_send_json(cut_event)
@@ -626,8 +642,9 @@ async def websocket_debate(
                             "is_final": True,
                             "confidence": 1.0,
                         })
-                        await stream_ai_audio(hesitation_cut, is_adversarial_interruption=True)
                         user_speech_start_time = 0.0
+                        last_partial_time = 0.0
+                        await stream_ai_audio(hesitation_cut, is_adversarial_interruption=True)
                         continue
 
             # Case B: AI concluded its question, but user remained silent (>2.3s dead air)

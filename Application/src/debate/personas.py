@@ -162,26 +162,28 @@ PRESSURE_DIRECTIVES: Dict[int, str] = {
 }
 
 FLUFF_INTERJECTIONS: List[str] = [
-    "Cut the buzzwords. What's the actual metric?",
-    "Drop the fillers and state your case.",
-    "Cut the fluff. Give me the hard number.",
-    "You're dodging. Give me a straight yes or no.",
-    "I asked for data, not a marketing pitch. Answer the question.",
+    "Stop. Cut the buzzwords. What's the actual metric?",
+    "Wait. Drop the fillers and state your case directly.",
+    "Hold on. Cut the fluff and give me the hard number.",
+    "Stop right there. You're dodging. Give me a straight yes or no.",
+    "Wait a second. I asked for verifiable data, not a marketing pitch. Answer the question.",
+    "Hold on. Enough buzzwords. What are the actual unit economics?",
 ]
 
 HESITATION_INTERJECTIONS: List[str] = [
-    "Hold on, I'm waiting. Answer the question.",
-    "Lost your train of thought? Give me the hard data.",
-    "Don't freeze up on me. What's your response?",
-    "Silence won't save you. What is the number?",
-    "Come on, you're stalling. Back up your claim.",
+    "Wait. Lost your train of thought? Back up your claim with data.",
+    "Stop. Don't freeze up on me. What's your response?",
+    "Hold on. Silence won't save you. What is the actual number?",
+    "Wait a second. You're stalling. Give me the answer.",
+    "Stop right there. Why the hesitation? Defend your position directly.",
 ]
 
 RAMBLING_INTERJECTIONS: List[str] = [
     "Stop right there. Wrap it up and give me the bottom line.",
-    "Stop dancing around the question. Yes or no?",
-    "Enough rambling. What is the actual answer?",
-    "You're running the clock. Get to the point.",
+    "Wait. Stop dancing around the question. Yes or no?",
+    "Hold on. Enough rambling. What is the actual answer?",
+    "Stop. You're running the clock. Get straight to the point.",
+    "Wait a second. That's thirty seconds of hand-waving. Answer the core inquiry.",
 ]
 
 
