@@ -1,12 +1,10 @@
-import { CircleStop, Mic, MicOff, RotateCcw, ShieldCheck, Terminal } from "lucide-react";
+import { CircleStop, Mic, MicOff, RotateCcw, ShieldCheck } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MicrophoneStreamer, VoicePlayer } from "./audio";
 import { PreflightModal } from "./components/PreflightModal";
 import { DossierPreview } from "./components/DossierPreview";
 import { DominanceHUD } from "./components/DominanceHUD";
 import { DebriefModal } from "./components/DebriefModal";
-import { DemoHUD } from "./components/DemoHUD";
-import { useDemoMode } from "./hooks/useDemoMode";
 import type {
   AiState,
   BattleDossier,
@@ -174,7 +172,6 @@ function App() {
   });
   const [speechIntel, setSpeechIntel] = useState<SpeechIntelligenceEvent | null>(null);
   const [turnTelemetry, setTurnTelemetry] = useState<TurnTelemetryEvent | null>(null);
-  const { isDemoActive, toggleDemo, eventLog, logEvent, clearLog } = useDemoMode();
 
   const wsRef = useRef<WebSocket | null>(null);
   const playerRef = useRef<VoicePlayer | null>(null);
@@ -291,13 +288,7 @@ function App() {
         }
 
         if (event.is_final) {
-          if (event.role === "user") {
-            logEvent("stt", "User Speech", event.text, {
-              confidence: event.confidence !== undefined ? event.confidence.toFixed(2) : "1.00",
-            });
-          } else {
-            logEvent("tts", "Adversary Statement", event.text);
-          }
+          // Final transcript line received
         }
         break;
       case "interruption":
@@ -309,9 +300,6 @@ function App() {
           setAiSubtitle((prev) =>
             prev ? { ...prev, text: event.spoken_before_cut || prev.text, interrupted: true } : null
           );
-          logEvent("barge_in", "User Barge-in", `Cut off adversary in ${event.latency_ms.toFixed(1)}ms`, {
-            latency_ms: event.latency_ms.toFixed(1),
-          });
         } else if (event.by === "ai") {
           // Adversarial interjection: AI seizes conversational floor
           micRef.current?.setMuted(true);
@@ -323,23 +311,14 @@ function App() {
             speaker: activeScenario.opponent,
             interrupted: false,
           });
-          logEvent("ai_cut", "Adversary Cut-in", `Triggered by ${event.reason || "fluff"}: "${event.phrase || event.spoken_before_cut || ""}"`, {
-            reason: event.reason || "fluff",
-          });
         }
         break;
       case "mic_lock":
         micRef.current?.setMuted(event.locked);
         setIsMicLocked(event.locked);
-        logEvent("system", "Mic Lock Status", event.locked ? "Locked (Adversary Floor)" : "Unlocked");
         break;
       case "composure_telemetry":
         setTelemetry(event);
-        logEvent("telemetry", "Composure Update", `Score: ${Math.round(event.composure_score)}/100 | WPM: ${Math.round(event.current_wpm)} | Fillers: ${event.filler_word_count}`, {
-          score: Math.round(event.composure_score),
-          wpm: Math.round(event.current_wpm),
-          fillers: event.filler_word_count,
-        });
         break;
       case "ai_state":
         setAiState(event.state);
@@ -361,37 +340,20 @@ function App() {
       case "debate_report":
         setDebriefLoading(false);
         setReport(event);
-        logEvent("system", "Debrief 2.0 Generated", `Overall Score: ${Math.round(event.overall_score)}/100 | Verdict: ${event.verdict}`);
         break;
       case "audio_chunk":
         await playerRef.current?.playBase64Chunk(event.data);
         break;
       case "speech_intelligence":
         setSpeechIntel(event);
-        logEvent("system", "Dominance Telemetry", `User: ${event.user_pct}% | AI: ${event.ai_pct}% (Dominance: ${event.dominance_ratio.toFixed(2)})`, {
-          user_talk_sec: event.user_talk_time_sec.toFixed(1),
-          ai_talk_sec: event.ai_talk_time_sec.toFixed(1),
-          micro_hesitations: event.micro_hesitations?.length ?? 0,
-        });
         break;
       case "turn_telemetry":
         setTurnTelemetry(event);
-        logEvent(
-          "telemetry",
-          "Turn Latency Telemetry",
-          `TTFA: ${Math.round(event.ttfa_ms)}ms | Barge-in: ${event.barge_in_latency_ms.toFixed(1)}ms | Model: ${event.llm_provider}`,
-          {
-            ttfa_ms: Math.round(event.ttfa_ms),
-            barge_in_ms: event.barge_in_latency_ms.toFixed(1),
-            stt: event.stt_provider,
-            tts: event.tts_provider,
-          }
-        );
         break;
       case "pong":
         break;
     }
-  }, [activeScenario.opponent, logEvent]);
+  }, [activeScenario.opponent]);
 
   const openSession = useCallback(async (sessionScenario: ScenarioId) => {
     disconnect();
@@ -500,22 +462,14 @@ function App() {
     <main className="home-shell">
         <section className="home-center" aria-label="Start debate">
           <Logo />
-          <div style={{ display: "flex", justifyContent: "center", gap: "8px", marginBottom: "0.75rem" }}>
+          <div style={{ display: "flex", justifyContent: "center", marginBottom: "0.75rem" }}>
             <button
               type="button"
               className="preflight-trigger-btn"
               onClick={() => setShowPreflight(true)}
-              title="Run Voice & Audio Preflight Check"
+              title="Calibrate microphone and verify speaker output"
             >
-              <ShieldCheck size={14} /> Voice Preflight
-            </button>
-            <button
-              type="button"
-              className="demo-hud-toggle-btn"
-              onClick={toggleDemo}
-              title="Toggle Judge Evidence HUD (`~` or Ctrl+Shift+D)"
-            >
-              <Terminal size={12} /> Judge Mode
+              <ShieldCheck size={14} /> Audio Setup
             </button>
           </div>
           <button
@@ -610,16 +564,6 @@ function App() {
           onClose={() => setShowPreflight(false)}
           backendUrl={BACKEND_URL}
         />
-        <DemoHUD
-          isOpen={isDemoActive}
-          onClose={toggleDemo}
-          eventLog={eventLog}
-          onClearLog={clearLog}
-          telemetry={telemetry}
-          speechIntel={speechIntel}
-          turnTelemetry={turnTelemetry}
-          lastBargeInMs={lastInterruption?.by === "user" ? lastInterruption.latency_ms : undefined}
-        />
       </main>
     );
   }
@@ -636,19 +580,10 @@ function App() {
             type="button"
             className="preflight-trigger-btn"
             onClick={() => setShowPreflight(true)}
-            title="Voice & Audio Preflight"
-            style={{ padding: "3px 8px", fontSize: "0.7rem" }}
+            title="Audio & Voice Calibration"
+            style={{ padding: "3px 10px", fontSize: "0.72rem" }}
           >
-            <ShieldCheck size={11} /> Preflight
-          </button>
-          <button
-            type="button"
-            className="demo-hud-toggle-btn"
-            onClick={toggleDemo}
-            title="Toggle Judge Evidence HUD (`~` or Ctrl+Shift+D)"
-            style={{ padding: "3px 8px", fontSize: "0.7rem" }}
-          >
-            <Terminal size={11} /> Judge Mode
+            <ShieldCheck size={11} /> Audio Setup
           </button>
         </div>
         <button className="ghost-icon" type="button" title="Back to start" onClick={returnHome}>
@@ -766,16 +701,6 @@ function App() {
         isOpen={showPreflight}
         onClose={() => setShowPreflight(false)}
         backendUrl={BACKEND_URL}
-      />
-      <DemoHUD
-        isOpen={isDemoActive}
-        onClose={toggleDemo}
-        eventLog={eventLog}
-        onClearLog={clearLog}
-        telemetry={telemetry}
-        speechIntel={speechIntel}
-        turnTelemetry={turnTelemetry}
-        lastBargeInMs={lastInterruption?.by === "user" ? lastInterruption.latency_ms : undefined}
       />
     </main>
   );

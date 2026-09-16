@@ -153,8 +153,8 @@ export const PreflightModal: React.FC<PreflightModalProps> = ({ isOpen, onClose,
               <ShieldCheck size={20} />
             </div>
             <div className="preflight-titles">
-              <h2>Voice Preflight Check</h2>
-              <p>Verify audio hardware &amp; cloud inference pipelines</p>
+              <h2>Audio &amp; Voice Setup</h2>
+              <p>Calibrate microphone input &amp; verify audio playback</p>
             </div>
           </div>
           <button
@@ -175,11 +175,11 @@ export const PreflightModal: React.FC<PreflightModalProps> = ({ isOpen, onClose,
                 <Mic size={18} className="preflight-item-icon" />
                 <div>
                   <div className="preflight-item-label">Microphone Input</div>
-                  <div className="preflight-item-sub">Speak to calibrate input sensitivity</div>
+                  <div className="preflight-item-sub">Speak to test microphone sensitivity</div>
                 </div>
               </div>
               <span className={`preflight-status-badge ${micActive ? "active" : ""}`}>
-                {micActive ? "Signal OK" : "Speak to test"}
+                {micActive ? "Signal Detected" : "Speak to test"}
               </span>
             </div>
             <div className="preflight-meter-track">
@@ -196,8 +196,8 @@ export const PreflightModal: React.FC<PreflightModalProps> = ({ isOpen, onClose,
               <div className="preflight-item-left">
                 <Volume2 size={18} className="preflight-item-icon" />
                 <div>
-                  <div className="preflight-item-label">Speaker Output</div>
-                  <div className="preflight-item-sub">Plays 440Hz / 880Hz dual-tone chime</div>
+                  <div className="preflight-item-label">Audio Playback</div>
+                  <div className="preflight-item-sub">Plays 440Hz / 880Hz test chime</div>
                 </div>
               </div>
               <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
@@ -206,58 +206,58 @@ export const PreflightModal: React.FC<PreflightModalProps> = ({ isOpen, onClose,
                   onClick={playChime}
                   className="preflight-action-pill"
                 >
-                  <Play size={12} /> Play
+                  <Play size={12} /> Play Chime
                 </button>
                 <button
                   type="button"
                   onClick={() => setSpeakerTested(true)}
                   className={`preflight-action-pill ${speakerTested ? "confirmed" : ""}`}
                 >
-                  {speakerTested ? "✓ Confirmed" : "I heard it"}
+                  {speakerTested ? "✓ Verified" : "I can hear it"}
                 </button>
               </div>
             </div>
           </div>
 
-          {/* Cloud Health Diagnostics */}
+          {/* System Services Diagnostics */}
           <div className="preflight-check-card">
             <div className="preflight-row" style={{ marginBottom: "2px" }}>
-              <span className="preflight-item-sub" style={{ textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 600 }}>
-                Cloud Engine Pipeline
+              <span className="preflight-item-sub" style={{ textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 700, color: "#71717a" }}>
+                System Services
               </span>
               <button
                 type="button"
                 onClick={fetchStatus}
                 disabled={loading}
                 className="preflight-refresh-btn"
-                title="Re-probe cloud services"
+                title="Re-probe system services"
               >
                 <RefreshCw size={12} className={loading ? "spin-icon" : ""} /> Refresh
               </button>
             </div>
             <div className="preflight-grid">
               <div className="preflight-grid-cell">
-                <span className="preflight-cell-label">Backend:</span>
-                <span className={`preflight-cell-val ${preflightData?.backend_status === "healthy" ? "healthy" : ""}`}>
-                  {preflightData?.backend_status || "Checking..."}
+                <span className="preflight-cell-label">Recognition:</span>
+                <span className={`preflight-cell-val ${preflightData?.assemblyai_status === "connected" ? "connected" : ""}`}>
+                  {preflightData?.assemblyai_status === "connected" ? "AssemblyAI v3" : (preflightData?.assemblyai_status || "Checking...")}
                 </span>
               </div>
               <div className="preflight-grid-cell">
-                <span className="preflight-cell-label">AssemblyAI v3:</span>
-                <span className={`preflight-cell-val ${preflightData?.assemblyai_status === "connected" ? "connected" : "warning"}`}>
-                  {preflightData?.assemblyai_status || "Checking..."}
+                <span className="preflight-cell-label">Voice Synthesis:</span>
+                <span className={`preflight-cell-val ${preflightData?.rime_status === "connected" ? "connected" : ""}`}>
+                  {preflightData?.rime_status === "connected" ? "Rime Coda" : (preflightData?.rime_status || "Checking...")}
                 </span>
               </div>
               <div className="preflight-grid-cell">
-                <span className="preflight-cell-label">Rime Coda:</span>
-                <span className={`preflight-cell-val ${preflightData?.rime_status === "connected" ? "connected" : "warning"}`}>
-                  {preflightData?.rime_status || "Checking..."}
-                </span>
-              </div>
-              <div className="preflight-grid-cell">
-                <span className="preflight-cell-label">Active LLM:</span>
+                <span className="preflight-cell-label">Adversary Model:</span>
                 <span className="preflight-cell-val truncate">
-                  {preflightData?.active_llm?.split("/").pop() || "Llama 3.3"}
+                  {preflightData?.active_llm?.split("/").pop() || "Llama 3.3 70B"}
+                </span>
+              </div>
+              <div className="preflight-grid-cell">
+                <span className="preflight-cell-label">Pipeline:</span>
+                <span className={`preflight-cell-val ${preflightData?.backend_status === "healthy" ? "healthy" : ""}`}>
+                  {preflightData?.backend_status === "healthy" ? "Online" : (preflightData?.backend_status || "Checking...")}
                 </span>
               </div>
             </div>
@@ -276,14 +276,14 @@ export const PreflightModal: React.FC<PreflightModalProps> = ({ isOpen, onClose,
             onClick={handlePassAndClose}
             className="preflight-skip-btn"
           >
-            Skip &amp; Start
+            Skip Setup
           </button>
           <button
             type="button"
             onClick={handlePassAndClose}
             className="preflight-submit-btn"
           >
-            <CheckCircle2 size={16} /> Start Sparring Session
+            <CheckCircle2 size={16} /> Enter Sparring
           </button>
         </div>
       </div>
