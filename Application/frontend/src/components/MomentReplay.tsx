@@ -1,12 +1,13 @@
 import React, { useState } from "react";
-import { ChevronLeft, ChevronRight, PlayCircle, Zap } from "lucide-react";
+import { ChevronLeft, ChevronRight, Flame, PlayCircle, Zap } from "lucide-react";
 import type { MomentBookmark } from "../types";
 
 interface MomentReplayProps {
   bookmarks?: MomentBookmark[];
+  onRematch?: (bookmark: MomentBookmark) => void;
 }
 
-export const MomentReplay: React.FC<MomentReplayProps> = ({ bookmarks = [] }) => {
+export const MomentReplay: React.FC<MomentReplayProps> = ({ bookmarks = [], onRematch }) => {
   const [selectedIndex, setSelectedIndex] = useState<number>(0);
 
   if (!bookmarks || bookmarks.length === 0) {
@@ -49,6 +50,7 @@ export const MomentReplay: React.FC<MomentReplayProps> = ({ bookmarks = [] }) =>
             onClick={() => setSelectedIndex((prev) => Math.max(0, prev - 1))}
             disabled={selectedIndex === 0}
             title="Previous key moment"
+            aria-label="Previous key moment"
           >
             <ChevronLeft size={16} />
           </button>
@@ -58,6 +60,7 @@ export const MomentReplay: React.FC<MomentReplayProps> = ({ bookmarks = [] }) =>
             onClick={() => setSelectedIndex((prev) => Math.min(bookmarks.length - 1, prev + 1))}
             disabled={selectedIndex === bookmarks.length - 1}
             title="Next key moment"
+            aria-label="Next key moment"
           >
             <ChevronRight size={16} />
           </button>
@@ -124,6 +127,20 @@ export const MomentReplay: React.FC<MomentReplayProps> = ({ bookmarks = [] }) =>
         {selected.reframe && (
           <div className="detail-reframe">
             <strong>Winning Reframe:</strong> <span>{selected.reframe}</span>
+          </div>
+        )}
+
+        {onRematch && (
+          <div className="moment-replay-actions">
+            <button
+              type="button"
+              className="rematch-moment-btn"
+              onClick={() => onRematch(selected)}
+              title="Step into the ring for a 30-second rapid-fire retry of this key moment"
+            >
+              <Flame size={13} className="text-amber-500" />
+              <span>Re-spar This Moment (30s Retry)</span>
+            </button>
           </div>
         )}
       </div>

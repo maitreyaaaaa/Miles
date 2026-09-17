@@ -531,8 +531,26 @@ class LLMClient:
             f"- Opponent: {persona_name}\n"
             f"- Difficulty: {difficulty}\n"
             f"- User Turns Spoken: {user_turn_count}\n"
-            f"- User Total Words: {user_word_count}\n\n"
-            f"COMPLETE DEBATE TRANSCRIPT:\n"
+            f"- User Total Words: {user_word_count}\n"
+        )
+
+        context_dossier = context.get("context_dossier")
+        if context_dossier:
+            metrics_list = context_dossier.get("numeric_metrics", [])
+            metrics_snippet = ", ".join([
+                f"{m.get('name') if isinstance(m, dict) else m.name}: {m.get('raw_value') if isinstance(m, dict) else m.raw_value}"
+                for m in metrics_list[:8]
+            ])
+            user_prompt += (
+                f"\n<untrusted_document_context>\n"
+                f"- Document: {context_dossier.get('title', 'Document')} ({context_dossier.get('doc_type', 'doc')})\n"
+                f"- Ground Truth Metrics: {metrics_snippet}\n"
+                f"- Audit Requirement: Heavily penalize any factual contradictions or bluffs against this source document.\n"
+                f"</untrusted_document_context>\n"
+            )
+
+        user_prompt += (
+            f"\nCOMPLETE DEBATE TRANSCRIPT:\n"
             f"{transcript_text}\n\n"
             f"Evaluate the debate transcript thoroughly and return ONLY the JSON report."
         )
@@ -680,3 +698,136 @@ class LLMClient:
             "strongest_answer": strongest,
             "executive_reframes": reframes,
         }
+
+    async def evaluate_rematch_turn(
+        self,
+        scenario: str,
+        opponent: str,
+        trap: str,
+        original_quote: str,
+        upgraded_answer: str,
+        duration_seconds: float = 10.0,
+        original_score: int = 55,
+        wpm: Optional[float] = None,
+        fillers: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Evaluate a 30-second rapid-fire retry turn against an adversarial trap."""
+        import re
+
+        # Analyze fillers
+        orig_fillers = []
+        for word in FILLER_WORDS:
+            orig_fillers.extend(re.findall(rf"\b{re.escape(word)}\b", original_quote.lower()))
+
+        upgraded_fillers = []
+        for word in FILLER_WORDS:
+            upgraded_fillers.extend(re.findall(rf"\b{re.escape(word)}\b", upgraded_answer.lower()))
+
+        words = re.findall(r"\b\w+\b", upgraded_answer)
+        word_count = len(words)
+        calc_wpm = round((word_count / max(1.0, duration_seconds)) * 60, 1) if wpm is None else round(wpm, 1)
+
+        # Baseline heuristic calculation
+        base_score = 84
+        base_score -= len(upgraded_fillers) * 6
+        if word_count < 6:
+            base_score -= 18
+        elif word_count >= 12:
+            base_score += 4
+
+        if 115 <= calc_wpm <= 165:
+            base_score += 5
+        elif calc_wpm > 185 or calc_wpm < 95:
+            base_score -= 5
+
+        # Reward filler reduction
+        if len(orig_fillers) > len(upgraded_fillers):
+            base_score += min(8, (len(orig_fillers) - len(upgraded_fillers)) * 3)
+
+        heuristic_score = max(40, min(97, base_score))
+        heuristic_delta = heuristic_score - original_score
+
+        pacing_verdict = (
+            f"Executive Cadence ({calc_wpm:.0f} WPM)"
+            if 115 <= calc_wpm <= 165
+            else (f"Rapid Pacing ({calc_wpm:.0f} WPM)" if calc_wpm > 165 else f"Measured / Deliberate ({calc_wpm:.0f} WPM)")
+        )
+
+        heuristic_result = {
+            "new_score": heuristic_score,
+            "original_score": original_score,
+            "delta_score": heuristic_delta,
+            "fillers_before": len(orig_fillers),
+            "fillers_after": len(upgraded_fillers),
+            "detected_fillers": list(set(upgraded_fillers)),
+            "cadence_wpm": calc_wpm,
+            "pacing_verdict": pacing_verdict,
+            "verdict": "Executive Recovery" if heuristic_delta > 0 else "Needs Sharpening",
+            "adversary_reaction": (
+                f"Conceded: {opponent} yields on the trap. Your reframe eliminated verbal hedging."
+                if heuristic_delta > 5
+                else f"{opponent} remains skeptical: Better, but deliver with more immediate proof."
+            ),
+            "tactical_analysis": (
+                f"Reduced filler words from {len(orig_fillers)} to {len(upgraded_fillers)}. "
+                f"Spoke at {calc_wpm:.0f} WPM directly addressing the adversarial vulnerability."
+            ),
+        }
+
+        # Attempt rapid LLM scoring with 3.5s timeout for deep semantic insight
+        system_prompt = (
+            "You are the Chief Evaluation Arbiter for Miles, an executive adversarial sparring platform.\n"
+            "Score this 30-second rapid-fire retry where the user attempts to overcome a prior weak answer.\n"
+            "Respond ONLY with a JSON object matching this schema:\n"
+            "{\n"
+            '  "new_score": <int 40-100>,\n'
+            '  "verdict": "<short punchy verdict e.g. Executive Victory / Decisive Defense>",\n'
+            '  "adversary_reaction": "<1 sentence adversary reaction/concession>",\n'
+            '  "tactical_analysis": "<1-2 sentences on why the upgrade succeeded or failed>"\n'
+            "}"
+        )
+        user_prompt = (
+            f"SCENARIO: {scenario} | OPPONENT: {opponent}\n"
+            f"BRUTAL ADVERSARY TRAP: \"{trap}\"\n"
+            f"ORIGINAL WEAK ANSWER: \"{original_quote}\" (Original Score: {original_score})\n"
+            f"UPGRADED RETRY: \"{upgraded_answer}\" (WPM: {calc_wpm}, Fillers: {len(upgraded_fillers)})\n"
+        )
+
+        if self._openai_client:
+            try:
+                response = await asyncio.wait_for(
+                    self._openai_client.chat.completions.create(
+                        model=config.openai_model or "gpt-4o",
+                        messages=[
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_prompt},
+                        ],
+                        response_format={"type": "json_object"},
+                        temperature=0.3,
+                        max_tokens=250,
+                    ),
+                    timeout=3.5,
+                )
+                raw_json = response.choices[0].message.content
+                if raw_json:
+                    parsed = extract_and_parse_json(raw_json)
+                    if parsed and "new_score" in parsed:
+                        llm_score = int(parsed["new_score"])
+                        return {
+                            "new_score": llm_score,
+                            "original_score": original_score,
+                            "delta_score": llm_score - original_score,
+                            "fillers_before": len(orig_fillers),
+                            "fillers_after": len(upgraded_fillers),
+                            "detected_fillers": list(set(upgraded_fillers)),
+                            "cadence_wpm": calc_wpm,
+                            "pacing_verdict": pacing_verdict,
+                            "verdict": parsed.get("verdict", heuristic_result["verdict"]),
+                            "adversary_reaction": parsed.get("adversary_reaction", heuristic_result["adversary_reaction"]),
+                            "tactical_analysis": parsed.get("tactical_analysis", heuristic_result["tactical_analysis"]),
+                        }
+            except Exception as e:
+                logger.warning(f"[LLMClient] Rematch LLM evaluation timed out or failed ({e}), using heuristic.")
+
+        return heuristic_result
+

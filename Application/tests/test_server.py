@@ -270,3 +270,52 @@ def test_websocket_turn_telemetry_event():
         assert "llm_provider" in telemetry_event
         assert telemetry_event["ttfa_ms"] > 0
 
+
+def test_synthesize_endpoint():
+    """Verify that /api/tts/synthesize returns standard WAV audio bytes."""
+    resp = client.post(
+        "/api/tts/synthesize",
+        json={"text": "Our unit economics are fully profitable.", "speaker": "alpine"},
+    )
+    assert resp.status_code == 200
+    assert resp.headers["content-type"] == "audio/wav"
+    assert len(resp.content) >= 44
+    assert resp.content[:4] == b"RIFF"
+    assert resp.content[8:12] == b"WAVE"
+
+    # Verify empty text validation
+    empty_resp = client.post("/api/tts/synthesize", json={"text": "   "})
+    assert empty_resp.status_code == 400
+
+
+def test_rematch_evaluate_endpoint():
+    """Verify that /api/debate/rematch/evaluate scores an upgraded retry."""
+    payload = {
+        "scenario": "vc_pitch",
+        "opponent": "Marcus Vance",
+        "trap": "Stop right there. Wrap it up and give me the bottom line.",
+        "original_quote": "Well, um, basically we are kinda growing, you know, sort of fast.",
+        "upgraded_answer": "Our gross margin is eighty-four percent with a four-month CAC payback across two thousand accounts.",
+        "duration_seconds": 12.0,
+        "original_score": 52,
+    }
+    resp = client.post("/api/debate/rematch/evaluate", json=payload)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert "new_score" in data
+    assert "delta_score" in data
+    assert data["delta_score"] > 0, "Commanding reframe should produce positive delta"
+    assert data["fillers_before"] >= 3
+    assert data["fillers_after"] == 0
+    assert "adversary_reaction" in data
+    assert "pacing_verdict" in data
+
+    # Empty upgraded answer validation
+    bad_resp = client.post("/api/debate/rematch/evaluate", json={
+        "trap": "Why?",
+        "original_quote": "Uh",
+        "upgraded_answer": "   ",
+    })
+    assert bad_resp.status_code == 400
+
+

@@ -90,6 +90,52 @@ export class VoicePlayer {
   }
 }
 
+export interface RecordedTurnAudio {
+  turnIndex: number;
+  transcript: string;
+  blob: Blob;
+  audioUrl: string;
+  durationSec: number;
+}
+
+export function pcm16ToWavBlob(pcmData: Int16Array, sampleRate = 16000): Blob {
+  const buffer = new ArrayBuffer(44 + pcmData.length * 2);
+  const view = new DataView(buffer);
+
+  // RIFF identifier 'RIFF'
+  view.setUint32(0, 0x52494646, false);
+  // file length
+  view.setUint32(4, 36 + pcmData.length * 2, true);
+  // RIFF type 'WAVE'
+  view.setUint32(8, 0x57415645, false);
+  // format chunk identifier 'fmt '
+  view.setUint32(12, 0x666d7420, false);
+  // format chunk length
+  view.setUint32(16, 16, true);
+  // sample format (raw linear PCM = 1)
+  view.setUint16(20, 1, true);
+  // channel count (1 = mono)
+  view.setUint16(22, 1, true);
+  // sample rate (16000)
+  view.setUint32(24, sampleRate, true);
+  // byte rate (sampleRate * 2)
+  view.setUint32(28, sampleRate * 2, true);
+  // block align (2)
+  view.setUint16(32, 2, true);
+  // bits per sample (16)
+  view.setUint16(34, 16, true);
+  // data chunk identifier 'data'
+  view.setUint32(36, 0x64617461, false);
+  // data chunk length
+  view.setUint32(40, pcmData.length * 2, true);
+
+  // write PCM samples
+  const pcmBytes = new Int16Array(buffer, 44, pcmData.length);
+  pcmBytes.set(pcmData);
+
+  return new Blob([buffer], { type: "audio/wav" });
+}
+
 export class MicrophoneStreamer {
   private mediaStream: MediaStream | null = null;
   private audioContext: AudioContext | null = null;
@@ -97,6 +143,11 @@ export class MicrophoneStreamer {
   private source: MediaStreamAudioSourceNode | null = null;
   private isMuted = false;
   private onLevelCallback: ((level: number) => void) | null = null;
+
+  // Turn-synchronized in-memory PCM capture for 'Listen to the Tape'
+  private currentTurnChunks: Int16Array[] = [];
+  private recordedTurns: Map<number, RecordedTurnAudio> = new Map();
+  private activeTurnIndex = 1;
 
   setMuted(muted: boolean) {
     this.isMuted = muted;
@@ -109,9 +160,59 @@ export class MicrophoneStreamer {
     return this.isMuted;
   }
 
+  startTurn(turnIndex: number) {
+    this.activeTurnIndex = turnIndex;
+    this.currentTurnChunks = [];
+  }
+
+  sealTurn(turnIndex: number, transcript: string): RecordedTurnAudio | null {
+    if (this.currentTurnChunks.length === 0) return null;
+    const totalSamples = this.currentTurnChunks.reduce((acc, chunk) => acc + chunk.length, 0);
+    const merged = new Int16Array(totalSamples);
+    let offset = 0;
+    for (const chunk of this.currentTurnChunks) {
+      merged.set(chunk, offset);
+      offset += chunk.length;
+    }
+    const blob = pcm16ToWavBlob(merged, 16000);
+    const audioUrl = URL.createObjectURL(blob);
+    const durationSec = totalSamples / 16000;
+    const record: RecordedTurnAudio = {
+      turnIndex,
+      transcript,
+      blob,
+      audioUrl,
+      durationSec,
+    };
+    this.recordedTurns.set(turnIndex, record);
+    this.currentTurnChunks = [];
+    return record;
+  }
+
+  sealActiveTurn(transcript = "Final spoken segment awaiting transcript"): RecordedTurnAudio | null {
+    return this.sealTurn(this.activeTurnIndex, transcript);
+  }
+
+  getRecordedTurns(): Map<number, RecordedTurnAudio> {
+    return new Map(this.recordedTurns);
+  }
+
+  clearRecordedTurns() {
+    for (const record of this.recordedTurns.values()) {
+      try {
+        URL.revokeObjectURL(record.audioUrl);
+      } catch {
+        // Ignored
+      }
+    }
+    this.recordedTurns.clear();
+    this.currentTurnChunks = [];
+  }
+
   async start(websocket: WebSocket, onLevel: (level: number) => void) {
     this.isMuted = false;
     this.onLevelCallback = onLevel;
+    this.currentTurnChunks = [];
     this.mediaStream = await navigator.mediaDevices.getUserMedia({
       audio: {
         channelCount: 1,
@@ -145,6 +246,9 @@ export class MicrophoneStreamer {
       const rms = Math.sqrt(sumSquares / inputData.length);
       onLevel(Math.min(1, rms * 18));
       websocket.send(pcm16.buffer);
+
+      // Capture PCM samples for post-debate audio replay
+      this.currentTurnChunks.push(new Int16Array(pcm16));
     };
 
     this.source.connect(this.processor);

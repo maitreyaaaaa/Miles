@@ -88,6 +88,7 @@ class RimeStreamingTTSClient:
         self,
         text: str,
         speed_alpha: float = 1.0,
+        speaker: Optional[str] = None,
     ) -> AsyncIterator[bytes]:
         """Stream raw PCM audio chunks for the given text.
         
@@ -106,7 +107,7 @@ class RimeStreamingTTSClient:
         try:
             if self.api_key:
                 async for chunk in self._stream_with_fast_cancel(
-                    self._stream_rime(text, speed_alpha)
+                    self._stream_rime(text, speed_alpha, speaker=speaker)
                 ):
                     if self._is_cancelled or self._cancel_event.is_set():
                         break
@@ -147,19 +148,11 @@ class RimeStreamingTTSClient:
                 if self._is_cancelled or self._cancel_event.is_set():
                     break
 
-                chunk_task = asyncio.create_task(queue.get())
-                cancel_task = asyncio.create_task(self._cancel_event.wait())
-                done, pending = await asyncio.wait(
-                    {chunk_task, cancel_task},
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
-                for p in pending:
-                    p.cancel()
+                try:
+                    item = await asyncio.wait_for(queue.get(), timeout=0.02)
+                except asyncio.TimeoutError:
+                    continue
 
-                if cancel_task in done:
-                    break
-
-                item = chunk_task.result()
                 if item is None:
                     break
                 if isinstance(item, Exception):
@@ -172,7 +165,7 @@ class RimeStreamingTTSClient:
                     await producer
             self._active_stream_task = None
 
-    async def _stream_rime(self, text: str, speed_alpha: float) -> AsyncIterator[bytes]:
+    async def _stream_rime(self, text: str, speed_alpha: float, speaker: Optional[str] = None) -> AsyncIterator[bytes]:
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -181,7 +174,7 @@ class RimeStreamingTTSClient:
         
         # Primary candidate: configured speaker + model
         candidate_model = self.model_id
-        candidate_speaker = self.speaker
+        candidate_speaker = speaker or self.speaker
         
         client = await self.get_http_client()
 

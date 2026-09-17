@@ -1,13 +1,16 @@
-import { CircleStop, Mic, MicOff, RotateCcw, ShieldCheck } from "lucide-react";
+import { ArrowRight, CircleStop, FileCheck, Mic, MicOff, RotateCcw, ShieldCheck, Video } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MicrophoneStreamer, VoicePlayer } from "./audio";
 import { PreflightModal } from "./components/PreflightModal";
 import { DossierPreview } from "./components/DossierPreview";
 import { DominanceHUD } from "./components/DominanceHUD";
 import { DebriefModal } from "./components/DebriefModal";
+import { ContextUploadModal } from "./components/ContextUploadModal";
+import { MeetingSchedulerModal } from "./components/MeetingSchedulerModal";
 import type {
   AiState,
   BattleDossier,
+  ContextDossier,
   DebateReportEvent,
   Difficulty,
   InterruptionEvent,
@@ -126,6 +129,7 @@ function buildWsUrl(
   difficulty: Difficulty,
   topic: string,
   personaTone: PersonaTone,
+  contextId?: string,
 ) {
   const base = new URL(BACKEND_URL);
   base.protocol = base.protocol === "https:" ? "wss:" : "ws:";
@@ -137,6 +141,9 @@ function buildWsUrl(
   base.searchParams.set("audio_format", "binary");
   if (scenario === "custom_debate" && topic.trim()) {
     base.searchParams.set("topic", topic.trim());
+  }
+  if (contextId) {
+    base.searchParams.set("context_id", contextId);
   }
   return base.toString();
 }
@@ -167,9 +174,11 @@ function App() {
     speaker?: string;
     interrupted?: boolean;
   } | null>(null);
-  const [showPreflight, setShowPreflight] = useState(() => {
-    return sessionStorage.getItem("miles_preflight_passed") !== "true";
-  });
+  const [showPreflight, setShowPreflight] = useState(false);
+  const [pendingStart, setPendingStart] = useState(false);
+  const [activeContext, setActiveContext] = useState<ContextDossier | null>(null);
+  const [showContextModal, setShowContextModal] = useState(false);
+  const [showMeetingModal, setShowMeetingModal] = useState(false);
   const [speechIntel, setSpeechIntel] = useState<SpeechIntelligenceEvent | null>(null);
   const [turnTelemetry, setTurnTelemetry] = useState<TurnTelemetryEvent | null>(null);
 
@@ -375,7 +384,7 @@ function App() {
     } catch {
       setStatusText("audio blocked");
     }
-    const socket = new WebSocket(buildWsUrl(sessionScenario, difficulty, topic, personaTone));
+    const socket = new WebSocket(buildWsUrl(sessionScenario, difficulty, topic, personaTone, activeContext?.context_id));
     socket.binaryType = "arraybuffer";
     wsRef.current = socket;
 
@@ -411,13 +420,35 @@ function App() {
       setAiState("idle");
       setStatusText("closed");
     };
-  }, [difficulty, disconnect, handleEvent, personaTone, stopMic, topic]);
+  }, [activeContext, difficulty, disconnect, handleEvent, personaTone, stopMic, topic]);
 
   const startDebate = async () => {
     const selectedScenario = topic.trim() ? "custom_debate" : scenario;
     setScenario(selectedScenario);
+
+    if (sessionStorage.getItem("miles_preflight_passed") !== "true") {
+      setPendingStart(true);
+      setShowPreflight(true);
+      return;
+    }
+
     setHasStarted(true);
     await openSession(selectedScenario);
+  };
+
+  const handlePreflightConfirm = async () => {
+    setShowPreflight(false);
+    if (pendingStart) {
+      setPendingStart(false);
+      const selectedScenario = topic.trim() ? "custom_debate" : scenario;
+      setHasStarted(true);
+      await openSession(selectedScenario);
+    }
+  };
+
+  const handlePreflightClose = () => {
+    setPendingStart(false);
+    setShowPreflight(false);
   };
 
   const toggleMic = async () => {
@@ -458,111 +489,316 @@ function App() {
   };
 
   if (!hasStarted) {
-    return (
-    <main className="home-shell">
-        <section className="home-center" aria-label="Start debate">
-          <Logo />
-          <div style={{ display: "flex", justifyContent: "center", marginBottom: "0.75rem" }}>
-            <button
-              type="button"
-              className="preflight-trigger-btn"
-              onClick={() => setShowPreflight(true)}
-              title="Calibrate microphone and verify speaker output"
-            >
-              <ShieldCheck size={14} /> Audio Setup
-            </button>
-          </div>
-          <button
-            className="start-button"
-            type="button"
-            onClick={startDebate}
-            disabled={topicPrep.status === "thinking"}
-          >
-            {topicPrep.status === "thinking" ? "Preparing" : "Start debate"}
-          </button>
+    const featuredScenarios = scenarios.slice(0, 3);
 
-          <div className="topic-maker">
-            <label htmlFor="custom-topic">Make your own topic</label>
-            <input
-              id="custom-topic"
-              value={topic}
-              onChange={(event) => {
-                setTopic(event.target.value);
-                if (event.target.value.trim()) setScenario("custom_debate");
-              }}
-              placeholder="e.g. Remote work is better than office work"
-            />
-            {topic.trim() && (
-              <div className={`topic-prep ${topicPrep.status}`}>
-                {topicPrep.status === "thinking" && (
-                  <div className="flex items-center justify-center gap-2 text-xs font-mono text-amber-300 py-2">
-                    <span className="animate-pulse">Cognitive calibration:</span>
-                    <strong className="underline decoration-amber-400/50">{topicPrep.word}</strong>
-                  </div>
-                )}
-                {topicPrep.status === "ready" && topicPrep.dossier && (
-                  <DossierPreview dossier={topicPrep.dossier} onStart={startDebate} />
-                )}
-                {topicPrep.status === "error" && (
-                  <p>{topicPrep.message}</p>
-                )}
+    return (
+      <main className="home-shell-modern">
+        {/* HERO SECTION WITH LIME ARTWORK BACKGROUND */}
+        <section className="hero-viewport" aria-label="Start debate">
+          {/* Top Corner Badges */}
+          <header className="hero-top-corners" aria-hidden="true">
+            <div className="hero-corner-item hero-corner-tl">
+              <span>BETTER CONVERSATIONS</span>
+              <span>A BRIGHTER YOU</span>
+            </div>
+            <div className="hero-corner-item hero-corner-tr">
+              <span>PRACTICE</span>
+              <span>ANYTIME</span>
+              <span>ANYWHERE</span>
+              <div className="hero-corner-dash" />
+            </div>
+          </header>
+
+          {/* Side Typography Annotations */}
+          <aside className="hero-side-annotation hero-annotation-left" aria-hidden="true">
+            <div className="annotation-content">
+              <span>SPEAK</span>
+              <span>THINK</span>
+              <span>IMPROVE</span>
+              <span>REPEAT.</span>
+            </div>
+          </aside>
+
+          <aside className="hero-side-annotation hero-annotation-right" aria-hidden="true">
+            <div className="annotation-content">
+              <span>IDEAS</span>
+              <span>ARGUMENTS</span>
+              <span>PERSPECTIVE</span>
+              <span>PROGRESS</span>
+              <svg className="hero-curved-arrow-svg" viewBox="0 0 54 54" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <path d="M12 44C16 26 26 14 44 10M44 10L32 8M44 10L40 22" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </div>
+          </aside>
+
+          <div className="hero-corner-item hero-corner-br" aria-hidden="true">
+            <span>REAL CONVERSATIONS</span>
+            <span>REAL GROWTH</span>
+            <div className="hero-corner-dash" />
+          </div>
+
+          {/* Center Stage Content */}
+          <div className="hero-content-wrapper">
+            {/* Logo */}
+            <div className="hero-logo-box">
+              <img src="/miles_home_logo.png" alt="Miles" className="hero-logo-img" />
+            </div>
+
+            {/* Headline with cursive text */}
+            <h1 className="hero-headline">
+              Practice the <span className="headline-cursive">conversations</span> that matter.
+            </h1>
+
+            {/* Subtitle */}
+            <p className="hero-subtitle">
+              An AI-powered space to debate, negotiate and rehearse high-stakes conversations so you can think sharper, speak clearer and be more confident.
+            </p>
+
+            {/* Quick Action Pills Row */}
+            <div className="hero-pills-row">
+              <button
+                type="button"
+                className="hero-pill-btn"
+                onClick={() => setShowPreflight(true)}
+                title="Calibrate microphone and verify speaker output"
+              >
+                <ShieldCheck size={14} className="hero-pill-icon" />
+                <span>Audio Setup</span>
+              </button>
+              <button
+                type="button"
+                className={`hero-pill-btn ${activeContext ? "active-pill" : ""}`}
+                onClick={() => setShowContextModal(true)}
+                title="Upload your Pitch Deck, CV, or Document for numeric cross-examination"
+              >
+                <FileCheck size={14} className="hero-pill-icon" />
+                <span>{activeContext ? "Ground-Truth Armed" : "Attach Context / Deck"}</span>
+              </button>
+              <button
+                type="button"
+                className="hero-pill-btn hero-pill-meet"
+                onClick={() => setShowMeetingModal(true)}
+                title="Schedule or launch Miles into a Google Meet"
+              >
+                <Video size={14} className="hero-pill-icon meet-icon" />
+                <span>Google Meet Mode</span>
+              </button>
+            </div>
+
+            {/* Active Context Banner */}
+            {activeContext && (
+              <div className="hero-context-banner">
+                <div className="context-banner-left">
+                  <span className="context-banner-type">{activeContext.doc_type.replace("_", " ").toUpperCase()}</span>
+                  <strong>{activeContext.title}</strong>
+                  <span className="context-banner-metrics">({activeContext.numeric_metrics.length} metrics tracked)</span>
+                </div>
+                <div className="context-banner-actions">
+                  <button type="button" onClick={() => setShowContextModal(true)}>
+                    Inspect
+                  </button>
+                  <button type="button" onClick={() => setActiveContext(null)}>
+                    Remove
+                  </button>
+                </div>
               </div>
             )}
-          </div>
 
-          <div className="predefined-topics" aria-label="Predefined topics">
-            {scenarios
-              .filter((item) => item.id !== "custom_debate")
-              .map((item) => (
+            {/* Start Debate CTA Button */}
+            <button
+              className="hero-start-cta"
+              type="button"
+              onClick={startDebate}
+              disabled={topicPrep.status === "thinking"}
+            >
+              {topicPrep.status === "thinking" ? "Preparing..." : "Start debate"}
+            </button>
+
+            {/* Topic Maker Input Capsule */}
+            <div className="hero-topic-maker">
+              <label htmlFor="custom-topic" className="hero-topic-label">
+                Make your own topic
+              </label>
+              <form
+                className="hero-topic-capsule"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (topic.trim() && topicPrep.status !== "thinking") {
+                    startDebate();
+                  }
+                }}
+              >
+                <input
+                  id="custom-topic"
+                  value={topic}
+                  onChange={(event) => {
+                    setTopic(event.target.value);
+                    if (event.target.value.trim()) setScenario("custom_debate");
+                  }}
+                  placeholder="e.g. Remote work is better than office work"
+                />
+                <button
+                  type="submit"
+                  className="hero-topic-arrow-btn"
+                  title="Spar on this topic"
+                  disabled={topicPrep.status === "thinking"}
+                >
+                  <ArrowRight size={16} />
+                </button>
+              </form>
+
+              {topic.trim() && (
+                <div className={`topic-prep ${topicPrep.status}`}>
+                  {topicPrep.status === "thinking" && (
+                    <div className="topic-prep-thinking-box">
+                      <span className="animate-pulse">Cognitive calibration:</span>
+                      <strong>{topicPrep.word}</strong>
+                    </div>
+                  )}
+                  {topicPrep.status === "ready" && topicPrep.dossier && (
+                    <DossierPreview dossier={topicPrep.dossier} onStart={startDebate} />
+                  )}
+                  {topicPrep.status === "error" && (
+                    <p>{topicPrep.message}</p>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* 3 Featured Scenario Cards */}
+            <div className="hero-featured-grid">
+              {featuredScenarios.map((item) => (
                 <button
                   key={item.id}
                   type="button"
-                  className={scenario === item.id && !topic.trim() ? "selected" : ""}
+                  className={`hero-scenario-card ${scenario === item.id && !topic.trim() ? "selected" : ""}`}
                   onClick={() => {
                     setScenario(item.id);
                     setTopic("");
                   }}
                 >
-                  <span className="scenario-tag-badge">{item.tag}</span>
-                  <span>{item.label}</span>
-                  <small>{item.topic}</small>
+                  <span className="hero-card-tag">{item.tag}</span>
+                  <strong className="hero-card-title">{item.label}</strong>
+                  <p className="hero-card-desc">{item.topic}</p>
                 </button>
               ))}
+            </div>
           </div>
 
-          <div className="section-label">Adversary Persona Tone</div>
-          <div className="persona-tones-row" aria-label="Adversary Persona Tone">
-            {personaTones.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                className={personaTone === item.id ? "selected" : ""}
-                onClick={() => setPersonaTone(item.id)}
-                title={item.desc}
-              >
-                {item.label}
-              </button>
-            ))}
-          </div>
+          {/* Smooth Fade to White Transition Overlay */}
+          <div className="hero-gradient-fade" />
+        </section>
 
-          <div className="section-label">Sparring Intensity</div>
-          <div className="difficulty-row" aria-label="Difficulty">
-            {difficulties.map((item) => (
+        {/* SECTION 2: WHITE BACKGROUND CONTENT & ADVANCED CONTROLS */}
+        <section className="white-content-section" aria-label="Debate Configuration">
+          <div className="white-content-inner">
+            <div className="section-divider-badge-wrapper">
+              <span className="section-eyebrow-badge">MORE SPARRING ARENAS</span>
+              <h2 className="section-heading-clean">Fine-tune your adversary & sparring rules</h2>
+              <p className="section-subheading-clean">
+                Explore specialized scenarios or adjust tactical aggression and difficulty.
+              </p>
+            </div>
+
+            {/* All Scenarios */}
+            <div className="control-group-box">
+              <div className="section-label">All Scenarios</div>
+              <div className="predefined-topics" aria-label="Predefined topics">
+                {scenarios
+                  .filter((item) => item.id !== "custom_debate")
+                  .map((item) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      className={scenario === item.id && !topic.trim() ? "selected" : ""}
+                      onClick={() => {
+                        setScenario(item.id);
+                        setTopic("");
+                      }}
+                    >
+                      <span className="scenario-tag-badge">{item.tag}</span>
+                      <span className="scenario-title-bold">{item.label}</span>
+                      <small>{item.topic}</small>
+                    </button>
+                  ))}
+              </div>
+            </div>
+
+            {/* Adversary Persona Tone */}
+            <div className="control-group-box">
+              <div className="section-label">Adversary Persona Tone</div>
+              <div className="persona-tones-row" aria-label="Adversary Persona Tone">
+                {personaTones.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    className={personaTone === item.id ? "selected" : ""}
+                    onClick={() => setPersonaTone(item.id)}
+                    title={item.desc}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Sparring Intensity */}
+            <div className="control-group-box">
+              <div className="section-label">Sparring Intensity</div>
+              <div className="difficulty-row" aria-label="Difficulty">
+                {difficulties.map((item) => (
+                  <button
+                    key={item}
+                    type="button"
+                    className={difficulty === item ? "selected" : ""}
+                    onClick={() => setDifficulty(item)}
+                  >
+                    {item}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Bottom Quick Start CTA */}
+            <div className="white-section-cta">
               <button
-                key={item}
+                className="hero-start-cta"
                 type="button"
-                className={difficulty === item ? "selected" : ""}
-                onClick={() => setDifficulty(item)}
+                onClick={startDebate}
+                disabled={topicPrep.status === "thinking"}
               >
-                {item}
+                {topicPrep.status === "thinking" ? "Preparing..." : "Start debate"}
               </button>
-            ))}
+            </div>
           </div>
         </section>
+
         <PreflightModal
           isOpen={showPreflight}
-          onClose={() => setShowPreflight(false)}
+          onClose={handlePreflightClose}
+          onConfirm={handlePreflightConfirm}
           backendUrl={BACKEND_URL}
+        />
+        <ContextUploadModal
+          isOpen={showContextModal}
+          onClose={() => setShowContextModal(false)}
+          activeContext={activeContext}
+          onSelectContext={(dossier) => setActiveContext(dossier)}
+          onClearContext={() => setActiveContext(null)}
+          backendUrl={BACKEND_URL}
+        />
+        <MeetingSchedulerModal
+          isOpen={showMeetingModal}
+          onClose={() => setShowMeetingModal(false)}
+          activeContext={activeContext}
+          backendUrl={BACKEND_URL}
+          onOpenContextUpload={() => {
+            setShowMeetingModal(false);
+            setShowContextModal(true);
+          }}
+          onViewDebrief={(debriefReport) => {
+            setReport(debriefReport);
+          }}
         />
       </main>
     );
@@ -699,8 +935,30 @@ function App() {
       )}
       <PreflightModal
         isOpen={showPreflight}
-        onClose={() => setShowPreflight(false)}
+        onClose={handlePreflightClose}
+        onConfirm={handlePreflightConfirm}
         backendUrl={BACKEND_URL}
+      />
+      <ContextUploadModal
+        isOpen={showContextModal}
+        onClose={() => setShowContextModal(false)}
+        activeContext={activeContext}
+        onSelectContext={(dossier) => setActiveContext(dossier)}
+        onClearContext={() => setActiveContext(null)}
+        backendUrl={BACKEND_URL}
+      />
+      <MeetingSchedulerModal
+        isOpen={showMeetingModal}
+        onClose={() => setShowMeetingModal(false)}
+        activeContext={activeContext}
+        backendUrl={BACKEND_URL}
+        onOpenContextUpload={() => {
+          setShowMeetingModal(false);
+          setShowContextModal(true);
+        }}
+        onViewDebrief={(debriefReport) => {
+          setReport(debriefReport);
+        }}
       />
     </main>
   );

@@ -1,44 +1,25 @@
 import React, { useEffect, useRef, useState } from "react";
-import { CheckCircle2, Mic, Play, RefreshCw, ShieldCheck, Volume2, X, AlertTriangle } from "lucide-react";
-import type { PreflightResponse } from "../types";
+import { CheckCircle2, Mic, Play, ShieldCheck, Volume2, X } from "lucide-react";
 
 interface PreflightModalProps {
   isOpen: boolean;
   onClose: () => void;
-  backendUrl: string;
+  onConfirm?: () => void;
+  backendUrl?: string;
 }
 
-export const PreflightModal: React.FC<PreflightModalProps> = ({ isOpen, onClose, backendUrl }) => {
+export const PreflightModal: React.FC<PreflightModalProps> = ({ isOpen, onClose, onConfirm }) => {
   const [micActive, setMicActive] = useState(false);
   const [micLevel, setMicLevel] = useState(0);
   const [speakerTested, setSpeakerTested] = useState(false);
-  const [preflightData, setPreflightData] = useState<PreflightResponse | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   const audioCtxRef = useRef<AudioContext | null>(null);
   const chimeCtxRef = useRef<AudioContext | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const animFrameRef = useRef<number | null>(null);
 
-  const fetchStatus = async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await fetch(`${backendUrl}/api/preflight`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = (await res.json()) as PreflightResponse;
-      setPreflightData(data);
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to probe backend");
-    } finally {
-      setLoading(false);
-    }
-  };
-
   useEffect(() => {
     if (!isOpen) return;
-    fetchStatus();
 
     // Start mic monitor
     let active = true;
@@ -133,7 +114,11 @@ export const PreflightModal: React.FC<PreflightModalProps> = ({ isOpen, onClose,
 
   const handlePassAndClose = () => {
     sessionStorage.setItem("miles_preflight_passed", "true");
-    onClose();
+    if (onConfirm) {
+      onConfirm();
+    } else {
+      onClose();
+    }
   };
 
   if (!isOpen) return null;
@@ -162,6 +147,7 @@ export const PreflightModal: React.FC<PreflightModalProps> = ({ isOpen, onClose,
             onClick={onClose}
             className="preflight-close-btn"
             title="Close modal"
+            aria-label="Close audio setup"
           >
             <X size={16} />
           </button>
@@ -217,56 +203,6 @@ export const PreflightModal: React.FC<PreflightModalProps> = ({ isOpen, onClose,
                 </button>
               </div>
             </div>
-          </div>
-
-          {/* System Services Diagnostics */}
-          <div className="preflight-check-card">
-            <div className="preflight-row" style={{ marginBottom: "2px" }}>
-              <span className="preflight-item-sub" style={{ textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 700, color: "#71717a" }}>
-                System Services
-              </span>
-              <button
-                type="button"
-                onClick={fetchStatus}
-                disabled={loading}
-                className="preflight-refresh-btn"
-                title="Re-probe system services"
-              >
-                <RefreshCw size={12} className={loading ? "spin-icon" : ""} /> Refresh
-              </button>
-            </div>
-            <div className="preflight-grid">
-              <div className="preflight-grid-cell">
-                <span className="preflight-cell-label">Recognition:</span>
-                <span className={`preflight-cell-val ${preflightData?.assemblyai_status === "connected" ? "connected" : ""}`}>
-                  {preflightData?.assemblyai_status === "connected" ? "AssemblyAI v3" : (preflightData?.assemblyai_status || "Checking...")}
-                </span>
-              </div>
-              <div className="preflight-grid-cell">
-                <span className="preflight-cell-label">Voice Synthesis:</span>
-                <span className={`preflight-cell-val ${preflightData?.rime_status === "connected" ? "connected" : ""}`}>
-                  {preflightData?.rime_status === "connected" ? "Rime Coda" : (preflightData?.rime_status || "Checking...")}
-                </span>
-              </div>
-              <div className="preflight-grid-cell">
-                <span className="preflight-cell-label">Adversary Model:</span>
-                <span className="preflight-cell-val truncate">
-                  {preflightData?.active_llm?.split("/").pop() || "Llama 3.3 70B"}
-                </span>
-              </div>
-              <div className="preflight-grid-cell">
-                <span className="preflight-cell-label">Pipeline:</span>
-                <span className={`preflight-cell-val ${preflightData?.backend_status === "healthy" ? "healthy" : ""}`}>
-                  {preflightData?.backend_status === "healthy" ? "Online" : (preflightData?.backend_status || "Checking...")}
-                </span>
-              </div>
-            </div>
-            {error && (
-              <div className="preflight-error-banner">
-                <AlertTriangle size={14} style={{ flexShrink: 0 }} />
-                <span>{error}</span>
-              </div>
-            )}
           </div>
         </div>
 

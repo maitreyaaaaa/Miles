@@ -78,6 +78,7 @@ class AssemblyAIStreamingClient:
         on_speech_start: Optional[Callable[[], None]] = None,
         on_filler_detected: Optional[Callable[[str], None]] = None,
         on_words: Optional[Callable[[List[Dict[str, Any]], List[Dict[str, Any]]], None]] = None,
+        on_disconnected: Optional[Callable[[], None]] = None,
     ):
         self.api_key = api_key
         self.sample_rate = sample_rate
@@ -87,6 +88,7 @@ class AssemblyAIStreamingClient:
         self.on_speech_start = on_speech_start
         self.on_filler_detected = on_filler_detected
         self.on_words = on_words
+        self.on_disconnected = on_disconnected
 
         self._ws: Optional[websockets.WebSocketClientProtocol] = None
         self._stopping = False
@@ -237,6 +239,12 @@ class AssemblyAIStreamingClient:
                 logger.warning(f"Error in AssemblyAI recv loop: {e}")
         finally:
             self._speech_active = False
+            self._is_connected = False
+            if self.on_disconnected and not self._stopping:
+                try:
+                    self.on_disconnected()
+                except Exception as exc:
+                    logger.debug(f"Error in on_disconnected callback: {exc}")
 
     async def stop(self):
         """Terminate streaming session cleanly."""

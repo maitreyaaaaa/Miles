@@ -10,13 +10,22 @@ import struct
 import time
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, HTTPException, Query, Response, UploadFile, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
+
+from src.meeting.models import MeetingConfig, MeetingSession, MeetingStatus
+from src.meeting.scheduler import get_meeting_scheduler, generate_meet_code
+from src.meeting.debrief_dispatcher import get_debrief_dispatcher
 
 from src.analytics.composure_scorer import ComposureScorer
 from src.config import config
+from src.context.analyzer import analyze_context_document
+from src.context.extractor import extract_text_from_bytes
+from src.context.store import get_context_store
 from src.debate.engine import DebateEngine
+from src.debate.llm_client import LLMClient
 from src.debate.personas import (
     build_custom_debate_persona,
     get_persona,
@@ -28,6 +37,9 @@ from src.debate.dossier import generate_fallback_dossier
 from src.voice.assemblyai_stream import AssemblyAIStreamingClient, SCENARIO_VOCABULARY
 from src.voice.interruption_manager import InterruptionManager
 from src.voice.rime_stream import RimeStreamingTTSClient, pcm_to_wav_bytes
+from src.debate.debrief_store import get_debrief_store
+from src.debate.pdf_generator import generate_executive_pdf
+from src.debate.interviewer_panel import get_interviewer_panel
 
 logging.basicConfig(
     level=logging.INFO,
@@ -41,14 +53,78 @@ app = FastAPI(
     version="0.1.0",
 )
 
+ALLOWED_ORIGIN_REGEX = r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$"
+ALLOWED_ORIGINS = [
+    "http://localhost:5173",
+    "http://localhost:3000",
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:3000",
+]
+
+
+def is_allowed_origin(origin: str) -> bool:
+    if not origin:
+        return True
+    norm = origin.rstrip("/")
+    if any(norm == o.rstrip("/") for o in ALLOWED_ORIGINS):
+        return True
+    import re
+    return bool(re.match(ALLOWED_ORIGIN_REGEX, norm))
+
+
 # Enable CORS for browser frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
+    allow_origin_regex=ALLOWED_ORIGIN_REGEX,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
+
+
+class WebSocketChannel:
+    """Thread-safe and concurrency-safe WebSocket dispatcher with task tracking."""
+
+    def __init__(self, websocket: WebSocket, stop_event: asyncio.Event):
+        self._ws = websocket
+        self._stop = stop_event
+        self._lock = asyncio.Lock()
+        self._tasks: set[asyncio.Task] = set()
+
+    async def send_json(self, payload: Dict[str, Any]) -> None:
+        if self._stop.is_set():
+            return
+        async with self._lock:
+            try:
+                await self._ws.send_text(json.dumps(payload))
+            except Exception as e:
+                logger.debug(f"[WebSocket] send_json error: {e}")
+
+    async def send_bytes(self, data: bytes) -> None:
+        if self._stop.is_set():
+            return
+        async with self._lock:
+            try:
+                await self._ws.send_bytes(data)
+            except Exception as e:
+                logger.debug(f"[WebSocket] send_bytes error: {e}")
+
+    def dispatch(self, coro) -> asyncio.Task:
+        """Spawn background task with strong reference to prevent GC eviction."""
+        task = asyncio.create_task(coro)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+        return task
+
+    async def cleanup(self) -> None:
+        for task in list(self._tasks):
+            if not task.done():
+                task.cancel()
+        if self._tasks:
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.gather(*self._tasks, return_exceptions=True)
+
 
 # In-memory registry of debate sessions
 SESSIONS: Dict[str, DebateEngine] = {}
@@ -88,6 +164,16 @@ class CustomTopicRequest(BaseModel):
     topic: str
     difficulty: Optional[str] = "hard"
     persona_tone: Optional[str] = "calm_ruthless"
+
+
+class ScheduleMeetingRequest(BaseModel):
+    meet_url: Optional[str] = None
+    context_id: Optional[str] = None
+    persona_id: Optional[str] = "vc_pitch"
+    difficulty: Optional[str] = "hard"
+    topic: Optional[str] = None
+    persona_tone: Optional[str] = None
+    max_duration_seconds: Optional[int] = 1800
 
 
 def calculate_pcm_rms(pcm_bytes: bytes) -> float:
@@ -192,6 +278,149 @@ async def get_persona_tones():
     return {"tones": list_persona_tones()}
 
 
+class SynthesizeTTSRequest(BaseModel):
+    text: str
+    speaker: Optional[str] = None
+    speed_alpha: Optional[float] = 1.0
+
+
+@app.post("/api/tts/synthesize")
+async def synthesize_speech_endpoint(req: SynthesizeTTSRequest):
+    """Synthesize text into standard WAV audio using Rime neural TTS (with system fallback).
+    
+    Used by Debrief 2.0 'Listen to the Tape' to vocalize executive reframes with
+    authoritative adversary cadence and tone.
+    """
+    text = req.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Text cannot be empty.")
+
+    speaker = req.speaker or config.rime_speaker
+    tts_client = RimeStreamingTTSClient(
+        speaker=speaker,
+        model_id=config.rime_model_id,
+        sample_rate=config.tts_sample_rate,
+    )
+    chunks: List[bytes] = []
+    try:
+        async for chunk in tts_client.stream_audio_chunks(text, speed_alpha=req.speed_alpha or 1.0):
+            chunks.append(chunk)
+    except Exception as e:
+        logger.error(f"[TTS Synthesize] Error synthesizing speech: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"TTS synthesis failed: {e}")
+    finally:
+        await tts_client.close()
+
+    raw_pcm = b"".join(chunks)
+    wav_bytes = pcm_to_wav_bytes(raw_pcm, sample_rate=config.tts_sample_rate)
+    return Response(content=wav_bytes, media_type="audio/wav")
+
+
+class RematchEvaluateRequest(BaseModel):
+    scenario: Optional[str] = "vc_pitch"
+    opponent: Optional[str] = "Marcus Vance"
+    trap: str
+    original_quote: str
+    upgraded_answer: str
+    duration_seconds: Optional[float] = 10.0
+    original_score: Optional[int] = 55
+    wpm: Optional[float] = None
+    fillers: Optional[List[str]] = None
+
+
+@app.post("/api/debate/rematch/evaluate")
+async def evaluate_rematch_endpoint(req: RematchEvaluateRequest):
+    """Evaluate a 30-second rapid-fire retry against an adversarial trap.
+    
+    Returns new score, composure delta (+points), filler reductions, and adversary concession.
+    """
+    upgraded = req.upgraded_answer.strip()
+    if not upgraded:
+        raise HTTPException(status_code=400, detail="Upgraded answer cannot be empty.")
+
+    llm_client = LLMClient()
+    try:
+        result = await llm_client.evaluate_rematch_turn(
+            scenario=req.scenario or "vc_pitch",
+            opponent=req.opponent or "Marcus Vance",
+            trap=req.trap,
+            original_quote=req.original_quote,
+            upgraded_answer=upgraded,
+            duration_seconds=req.duration_seconds or 10.0,
+            original_score=req.original_score or 55,
+            wpm=req.wpm,
+            fillers=req.fillers,
+        )
+        return result
+    except Exception as e:
+        logger.error(f"[Rematch] Error evaluating turn: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Rematch evaluation failed: {e}")
+
+
+class ShareDebriefRequest(BaseModel):
+    report: Dict[str, Any]
+    share_id: Optional[str] = None
+
+
+@app.post("/api/debrief/share")
+async def share_debrief_endpoint(req: ShareDebriefRequest):
+    """Persist a debrief report and return a permanent read-only shareable ID and URL."""
+    try:
+        store = get_debrief_store()
+        share_id = store.save_debrief(req.report, custom_share_id=req.share_id)
+        return {
+            "share_id": share_id,
+            "share_url": f"/?share={share_id}",
+            "share_scope": "unguessable_read_only_link",
+            "privacy_notice": "Anyone with this local share URL can view the debrief report.",
+            "title": req.report.get("topic", "Adversarial Debrief"),
+        }
+    except Exception as e:
+        logger.error(f"[Debrief Share] Error saving debrief: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/debrief/share/{share_id}")
+async def get_shared_debrief_endpoint(share_id: str):
+    """Retrieve saved read-only debrief report by its share token."""
+    store = get_debrief_store()
+    report = store.get_debrief(share_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="Debrief report not found or expired.")
+    return JSONResponse(content=report, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/debrief/{session_id}/pdf")
+async def export_debrief_pdf_endpoint(session_id: str):
+    """Generate and stream a pixel-perfect ReportLab Executive Summary PDF."""
+    report = None
+    if session_id in SESSIONS:
+        engine = SESSIONS[session_id]
+        report = getattr(engine, "_cached_report", None) or engine.get_debrief_report()
+    if not report:
+        store = get_debrief_store()
+        report = store.get_debrief(session_id)
+    if not report:
+        dispatcher = get_debrief_dispatcher()
+        report = dispatcher.get_saved_debrief(session_id)
+    if not report:
+        raise HTTPException(status_code=404, detail=f"Session or debrief report '{session_id}' not found for PDF export.")
+
+    try:
+        pdf_bytes = generate_executive_pdf(report)
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f'inline; filename="miles-executive-debrief-{session_id[:12]}.pdf"',
+                "Cache-Control": "no-cache",
+            },
+        )
+    except Exception as e:
+        logger.error(f"[Debrief PDF] Error generating PDF for {session_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"PDF generation failed: {e}")
+
+
 @app.post("/api/scenarios/custom")
 async def setup_custom_topic(req: CustomTopicRequest):
     """Register and validate a custom debate topic, generating structured 5-vector battle dossier."""
@@ -205,6 +434,73 @@ async def setup_custom_topic(req: CustomTopicRequest):
     return dossier
 
 
+MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10 MB
+
+
+@app.post("/api/context/upload")
+async def upload_context_document(file: UploadFile = File(...)):
+    """Ingest uploaded document (PDF, DOCX, TXT, MD, CSV) with bounded streaming size."""
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="Missing filename.")
+
+    chunks = []
+    bytes_read = 0
+    while chunk := await file.read(64 * 1024):
+        bytes_read += len(chunk)
+        if bytes_read > MAX_UPLOAD_SIZE:
+            raise HTTPException(status_code=413, detail="File exceeds maximum allowed size (10MB).")
+        chunks.append(chunk)
+
+    content = b"".join(chunks)
+    if len(content) == 0:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+
+    extracted = extract_text_from_bytes(content, file.filename)
+    if not extracted.get("text"):
+        raise HTTPException(status_code=400, detail="Could not extract readable text from uploaded document.")
+
+    store = get_context_store()
+    dossier = await analyze_context_document(extracted["text"], file.filename)
+    store.save_context(dossier)
+    return dossier.to_dict()
+
+
+class PasteContextRequest(BaseModel):
+    text: str
+    filename: Optional[str] = "Pasted Context.txt"
+
+
+@app.post("/api/context/paste")
+async def paste_context_text(req: PasteContextRequest):
+    """Ingest raw pasted text/resume/pitch deck notes and generate structured forensic Context Dossier."""
+    text = req.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Text cannot be empty.")
+
+    filename = req.filename or "Pasted Context.txt"
+    store = get_context_store()
+    dossier = await analyze_context_document(text, filename)
+    store.save_context(dossier)
+    return dossier.to_dict()
+
+
+@app.get("/api/context/{context_id}")
+async def get_context_by_id(context_id: str):
+    """Retrieve an existing context dossier by ID."""
+    store = get_context_store()
+    dossier = store.get_context(context_id)
+    if not dossier:
+        raise HTTPException(status_code=404, detail="Context not found.")
+    return dossier.to_dict()
+
+
+@app.get("/api/contexts")
+async def list_available_contexts():
+    """List all previously ingested context dossiers."""
+    store = get_context_store()
+    return {"contexts": store.list_contexts()}
+
+
 @app.get("/api/session/{session_id}/report")
 async def get_session_report(session_id: str):
     """Retrieve the post-debate debrief report for a completed session."""
@@ -212,6 +508,130 @@ async def get_session_report(session_id: str):
     if not engine:
         raise HTTPException(status_code=404, detail="Debate session not found.")
     return engine.get_debrief_report()
+
+
+# ==========================================
+# Google Meet Sparring Endpoints
+# ==========================================
+
+
+@app.post("/api/meeting/schedule")
+async def schedule_google_meet(req: ScheduleMeetingRequest):
+    """Schedule a Google Meet sparring session for Miles."""
+    scheduler = get_meeting_scheduler()
+    cfg = MeetingConfig(
+        max_duration_seconds=req.max_duration_seconds or 1800,
+        audio_only=True,
+    )
+    session = scheduler.schedule_meeting(
+        meet_url=req.meet_url,
+        context_id=req.context_id,
+        persona_id=req.persona_id or "vc_pitch",
+        difficulty=req.difficulty or "hard",
+        topic=req.topic,
+        persona_tone=req.persona_tone,
+        config=cfg,
+    )
+    return session.to_dict()
+
+
+@app.post("/api/meeting/{meeting_id}/start")
+async def start_google_meet_session(meeting_id: str):
+    """Deploy Miles bot into the Google Meet call (audio-only)."""
+    scheduler = get_meeting_scheduler()
+    try:
+        coordinator = await scheduler.start_meeting(meeting_id)
+        return {
+            "status": "in_call",
+            "meeting_id": meeting_id,
+            "meet_url": coordinator.session.meet_url,
+            "opening_statement": coordinator.engine.last_ai_text,
+            "session": coordinator.session.to_dict(),
+        }
+    except Exception as e:
+        logger.error(f"[API] Error starting meeting {meeting_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/meeting/{meeting_id}/stop")
+async def stop_google_meet_session(meeting_id: str):
+    """Conclude Google Meet session, disconnect bot, and generate deep debrief report."""
+    scheduler = get_meeting_scheduler()
+    try:
+        report = await scheduler.stop_meeting(meeting_id)
+        session = scheduler.get_session(meeting_id)
+        return {
+            "status": "completed",
+            "meeting_id": meeting_id,
+            "debrief_report": report,
+            "session": session.to_dict() if session else None,
+        }
+    except Exception as e:
+        logger.error(f"[API] Error stopping meeting {meeting_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/meeting/generate-link")
+async def generate_instant_link():
+    """Generate a Meet-shaped local demo link.
+
+    This does not provision a real Google Meet room. It exists for local scheduling
+    simulations until an external calendar/Meet provider is connected.
+    """
+    scheduler = get_meeting_scheduler()
+    return {
+        "meet_url": generate_meet_code(),
+        "provisioned": False,
+        "provider_mode": scheduler.bot_provider.provider_mode,
+        "provider_notice": scheduler.bot_provider.provider_notice,
+    }
+
+
+@app.get("/api/meetings")
+async def list_google_meet_sessions():
+    """List all scheduled and historical Google Meet sessions."""
+    scheduler = get_meeting_scheduler()
+    sessions = scheduler.list_sessions()
+    return {"meetings": [s.to_dict() for s in sessions]}
+
+
+@app.get("/api/meeting/{meeting_id}")
+async def get_google_meet_session(meeting_id: str):
+    """Retrieve Google Meet session details and status."""
+    scheduler = get_meeting_scheduler()
+    session = scheduler.get_session(meeting_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Meeting not found.")
+    return session.to_dict()
+
+
+@app.get("/api/meeting/{meeting_id}/debrief")
+async def get_google_meet_debrief(meeting_id: str):
+    """Retrieve debrief report for a completed Google Meet session."""
+    scheduler = get_meeting_scheduler()
+    session = scheduler.get_session(meeting_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Meeting not found.")
+    if session.debrief_report:
+        return session.debrief_report
+
+    dispatcher = get_debrief_dispatcher()
+    saved = dispatcher.get_saved_debrief(meeting_id)
+    if saved:
+        return saved
+    raise HTTPException(status_code=404, detail="Debate debrief report not available for this meeting yet.")
+
+
+@app.get("/api/meeting/{meeting_id}/debrief/html")
+async def get_google_meet_debrief_html(meeting_id: str):
+    """Retrieve HTML formatted debrief email report."""
+    scheduler = get_meeting_scheduler()
+    session = scheduler.get_session(meeting_id)
+    if not session or not session.debrief_report:
+        raise HTTPException(status_code=404, detail="Meeting or debrief report not found.")
+    dispatcher = get_debrief_dispatcher()
+    html_content = dispatcher.format_html_summary(session)
+    return HTMLResponse(content=html_content)
 
 
 # ==========================================
@@ -227,10 +647,30 @@ async def websocket_debate(
     difficulty: str = Query("hard"),
     persona_tone: Optional[str] = Query(None),
     audio_format: str = Query("binary"),
+    context_id: Optional[str] = Query(None),
+    is_panel_mode: bool = Query(False),
 ):
     """Full-Duplex live audio & telemetry stream for Miles."""
+    origin = websocket.headers.get("origin")
+    if origin and not is_allowed_origin(origin):
+        logger.warning(f"[WebSocket] Rejected connection from unauthorized origin: {origin}")
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+
     install_stream_shutdown_filter()
     await websocket.accept()
+
+    # Load context dossier if provided
+    context_dossier = None
+    if context_id:
+        store = get_context_store()
+        stored = store.get_context(context_id)
+        if stored:
+            context_dossier = stored.to_dict()
+            logger.info(
+                f"[WebSocket] Loaded Context Dossier '{stored.title}' "
+                f"({len(stored.numeric_metrics)} metrics, doc_type: {stored.doc_type})"
+            )
 
     # 1. Initialize Debate Engine & Services
     engine = DebateEngine(
@@ -238,6 +678,8 @@ async def websocket_debate(
         topic=topic,
         difficulty=difficulty,
         persona_tone=persona_tone,
+        context_dossier=context_dossier,
+        is_panel_mode=is_panel_mode,
     )
     if len(SESSIONS) > 50:
         oldest_key = next(iter(SESSIONS))
@@ -278,22 +720,13 @@ async def websocket_debate(
     stt_client: Optional[AssemblyAIStreamingClient] = None
     stt_connected = False
     stop_event = asyncio.Event()
+    ws_channel = WebSocketChannel(websocket, stop_event)
 
     async def safe_send_json(payload: Dict):
-        if stop_event.is_set():
-            return
-        try:
-            await websocket.send_text(json.dumps(payload))
-        except Exception as e:
-            logger.debug(f"[WebSocket] safe_send_json suppressed: {e}")
+        await ws_channel.send_json(payload)
 
     async def safe_send_bytes(data: bytes):
-        if stop_event.is_set():
-            return
-        try:
-            await websocket.send_bytes(data)
-        except Exception as e:
-            logger.debug(f"[WebSocket] safe_send_bytes suppressed: {e}")
+        await ws_channel.send_bytes(data)
 
     async def emit_speech_intelligence():
         total = user_talk_time_sec + ai_talk_time_sec
@@ -346,7 +779,8 @@ async def websocket_debate(
             await safe_send_json({"type": "ai_state", "state": "speaking"})
 
             try:
-                async for chunk in tts_client.stream_audio_chunks(text):
+                active_speaker_voice = engine.current_speaker_voice or engine.persona.speaker
+                async for chunk in tts_client.stream_audio_chunks(text, speaker=active_speaker_voice):
                     if interruption_mgr.ai_is_speaking and not stop_event.is_set():
                         if audio_format in ("binary", "both"):
                             await safe_send_bytes(chunk)
@@ -417,8 +851,8 @@ async def websocket_debate(
         if interruption_mgr.ai_is_speaking or interruption_mgr.ai_is_thinking:
             event = perform_barge_in_sync()
             if event:
-                asyncio.create_task(safe_send_json(event))
-                asyncio.create_task(safe_send_json({"type": "ai_state", "state": "interrupted"}))
+                ws_channel.dispatch(safe_send_json(event))
+                ws_channel.dispatch(safe_send_json({"type": "ai_state", "state": "interrupted"}))
 
     def on_stt_partial(transcript: str, confidence: float):
         """Interim user speech transcript."""
@@ -433,7 +867,7 @@ async def websocket_debate(
         last_partial_time = now
 
         # Broadcast interim transcript (for user speech telemetry)
-        asyncio.create_task(safe_send_json({
+        ws_channel.dispatch(safe_send_json({
             "type": "transcript",
             "role": "user",
             "text": transcript,
@@ -445,13 +879,13 @@ async def websocket_debate(
         interjection = engine.check_fluff_interruption(transcript, mid_hesitation)
         if interjection and not interruption_mgr.ai_is_speaking and not interruption_mgr.ai_is_thinking and not interruption_mgr.ai_interruption_active:
             interruption_mgr.start_ai_interruption()
-            asyncio.create_task(safe_send_json({"type": "mic_lock", "locked": True, "reason": "ai_interruption"}))
-            asyncio.create_task(safe_send_json({"type": "ai_state", "state": "speaking"}))
+            ws_channel.dispatch(safe_send_json({"type": "mic_lock", "locked": True, "reason": "ai_interruption"}))
+            ws_channel.dispatch(safe_send_json({"type": "ai_state", "state": "speaking"}))
 
             engine.record_ai_cut_in("fluff_detected", interjection)
             cut_event = interruption_mgr.trigger_ai_interruption(interjection, reason="fluff_detected")
-            asyncio.create_task(safe_send_json(cut_event))
-            asyncio.create_task(safe_send_json({
+            ws_channel.dispatch(safe_send_json(cut_event))
+            ws_channel.dispatch(safe_send_json({
                 "type": "transcript",
                 "role": "ai",
                 "speaker": engine.persona.name,
@@ -459,7 +893,7 @@ async def websocket_debate(
                 "is_final": True,
                 "confidence": 1.0,
             }))
-            asyncio.create_task(stream_ai_audio(interjection, is_adversarial_interruption=True))
+            ws_channel.dispatch(stream_ai_audio(interjection, is_adversarial_interruption=True))
 
     def on_stt_final(transcript: str, confidence: float):
         """Finalized user statement."""
@@ -481,7 +915,7 @@ async def websocket_debate(
         was_barge_in = current_turn_was_barge_in
 
         # Broadcast finalized user transcript
-        asyncio.create_task(safe_send_json({
+        ws_channel.dispatch(safe_send_json({
             "type": "transcript",
             "role": "user",
             "text": transcript,
@@ -496,13 +930,37 @@ async def websocket_debate(
             hesitation_sec=hesitation,
             was_barge_in=was_barge_in,
         )
-        asyncio.create_task(safe_send_json(snapshot.to_dict()))
+        ws_channel.dispatch(safe_send_json(snapshot.to_dict()))
+
+        # Broadcast real-time ground truth audit telemetry if context is active
+        if engine.fact_auditor and engine.fact_auditor.dossier:
+            audit_summary = engine.fact_auditor.get_audit_summary()
+            ws_channel.dispatch(safe_send_json({
+                "type": "fact_audit_update",
+                "factual_accuracy_score": audit_summary["factual_accuracy_score"],
+                "verified_count": audit_summary["verified_count"],
+                "discrepancy_count": audit_summary["discrepancy_count"],
+                "verified_metrics": audit_summary["verified_metrics"],
+                "discrepancies": audit_summary["discrepancies"],
+            }))
+
+        # Broadcast real-time math contradiction alert if triggered
+        if engine.math_auditor and engine.math_auditor.discrepancy_history:
+            last_math = engine.math_auditor.discrepancy_history[-1]
+            if last_math.round_number == engine.round_number:
+                ws_channel.dispatch(safe_send_json({
+                    "type": "math_contradiction_alert",
+                    "rule_type": last_math.rule_type,
+                    "description": last_math.description,
+                    "lethal_salvo": last_math.lethal_salvo,
+                    "claimed_values": last_math.claimed_values,
+                }))
 
         # Update talk-time & speech intelligence
         nonlocal user_talk_time_sec, turn_round
         turn_round += 1
         user_talk_time_sec += duration
-        asyncio.create_task(emit_speech_intelligence())
+        ws_channel.dispatch(emit_speech_intelligence())
 
         # Reset turn markers
         current_turn_was_barge_in = False
@@ -511,7 +969,7 @@ async def websocket_debate(
         # Cancel any previous AI task and trigger new counter-attack
         if active_ai_turn_task and not active_ai_turn_task.done():
             active_ai_turn_task.cancel()
-        active_ai_turn_task = asyncio.create_task(execute_ai_turn(trigger_time=now))
+        active_ai_turn_task = ws_channel.dispatch(execute_ai_turn(trigger_time=now))
 
     def on_stt_words(words: List[Dict[str, Any]], hesitations: List[Dict[str, Any]]):
         """Process word-level timestamps and micro-hesitation events."""
@@ -524,7 +982,7 @@ async def websocket_debate(
                         word_before=h.get("word_before", ""),
                         word_after=h.get("word_after", ""),
                     )
-            asyncio.create_task(emit_speech_intelligence())
+            ws_channel.dispatch(emit_speech_intelligence())
 
     async def execute_ai_turn(trigger_time: Optional[float] = None):
         """Pipelined adversarial generation: stream clauses into TTS immediately for sub-second TTFA."""
@@ -549,7 +1007,9 @@ async def websocket_debate(
                     await safe_send_json({
                         "type": "transcript",
                         "role": "ai",
-                        "speaker": engine.persona.name,
+                        "speaker": engine.current_speaker_name,
+                        "speaker_voice": engine.current_speaker_voice,
+                        "is_panel_mode": engine.is_panel_mode,
                         "text": current_full_text,
                         "is_final": False,
                         "confidence": 1.0,
@@ -570,11 +1030,20 @@ async def websocket_debate(
                 await safe_send_json({
                     "type": "transcript",
                     "role": "ai",
-                    "speaker": engine.persona.name,
+                    "speaker": engine.current_speaker_name,
+                    "speaker_voice": engine.current_speaker_voice,
+                    "is_panel_mode": engine.is_panel_mode,
                     "text": final_text,
                     "is_final": True,
                     "confidence": 1.0,
                 })
+
+                # Broadcast detected rhetorical tactic for Training HUD
+                if engine.last_detected_tactic:
+                    await safe_send_json({
+                        "type": "rhetorical_tactic",
+                        "tactic": engine.last_detected_tactic.to_dict(),
+                    })
 
         except asyncio.CancelledError:
             interruption_mgr.mark_ai_thinking_done()
@@ -684,27 +1153,53 @@ async def websocket_debate(
         nonlocal stt_connected
         stt_connected = await stt_client.connect()
 
-    asyncio.create_task(connect_stt_background())
+    ws_channel.dispatch(connect_stt_background())
 
     # 3. Deliver opening salvo immediately
     opening_start = time.time()
+    if context_dossier:
+        await safe_send_json({
+            "type": "context_loaded",
+            "context_id": context_dossier.get("context_id"),
+            "title": context_dossier.get("title"),
+            "doc_type": context_dossier.get("doc_type"),
+            "metric_count": len(context_dossier.get("numeric_metrics", [])),
+            "metrics": context_dossier.get("numeric_metrics", []),
+        })
+
+    if engine.is_panel_mode and engine.panel:
+        await safe_send_json({
+            "type": "panel_init",
+            "panel": engine.panel.to_dict(),
+        })
+
     opening = engine.start_debate()
     await safe_send_json({
         "type": "transcript",
         "role": "ai",
-        "speaker": engine.persona.name,
+        "speaker": engine.current_speaker_name,
+        "speaker_voice": engine.current_speaker_voice,
+        "is_panel_mode": engine.is_panel_mode,
         "text": opening,
         "is_final": True,
         "confidence": 1.0,
     })
+
+    # Broadcast initial tactical attack profile for Training HUD
+    init_tactic = engine.tactic_detector.detect_tactic(opening)
+    await safe_send_json({
+        "type": "rhetorical_tactic",
+        "tactic": init_tactic.to_dict(),
+    })
+
     init_snapshot = engine.scorer.evaluate_turn("", duration_seconds=1.0)
     await safe_send_json(init_snapshot.to_dict())
-    asyncio.create_task(emit_speech_intelligence())
-    asyncio.create_task(emit_turn_telemetry(opening_start))
+    ws_channel.dispatch(emit_speech_intelligence())
+    ws_channel.dispatch(emit_turn_telemetry(opening_start))
 
     # Stream opening audio and launch active presence monitor
-    active_ai_turn_task = asyncio.create_task(stream_ai_audio(opening))
-    monitor_task = asyncio.create_task(monitor_user_presence_loop())
+    active_ai_turn_task = ws_channel.dispatch(stream_ai_audio(opening))
+    monitor_task = ws_channel.dispatch(monitor_user_presence_loop())
 
     # 4. Main WebSocket Message Pump
     try:
@@ -772,7 +1267,7 @@ async def websocket_debate(
                 except json.JSONDecodeError:
                     pass
 
-    except WebSocketDisconnect:
+    except (WebSocketDisconnect, asyncio.CancelledError):
         logger.info(f"[WebSocket] Client disconnected: session {engine.session_id}")
     except RuntimeError as e:
         if "disconnect" in str(e).lower() or "closed" in str(e).lower():
@@ -791,6 +1286,7 @@ async def websocket_debate(
             active_ai_turn_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await active_ai_turn_task
+        await ws_channel.cleanup()
         if stt_client:
             await stt_client.stop()
         tts_client.cancel()

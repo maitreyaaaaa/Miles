@@ -7,8 +7,19 @@ import uuid
 from typing import Any, AsyncIterator, Dict, List, Optional
 
 from src.analytics.composure_scorer import ComposureScorer, TelemetrySnapshot
+from src.context.analyzer import ContextDossier
+from src.context.fact_auditor import FactAuditor
+from src.debate.interviewer_panel import (
+    InterviewerPanel,
+    Panelist,
+    build_panel_system_prompt,
+    get_interviewer_panel,
+    parse_panel_turn,
+)
 from src.debate.llm_client import LLMClient, clean_spoken_text
+from src.debate.math_auditor import MathAuditor
 from src.debate.personas import Persona, get_persona
+from src.debate.tactic_detector import RhetoricalTactic, TacticDetector
 
 logger = logging.getLogger(__name__)
 
@@ -24,12 +35,16 @@ class DebateEngine:
         session_id: Optional[str] = None,
         llm_client: Optional[LLMClient] = None,
         persona_tone: Optional[str] = None,
+        context_dossier: Optional[Dict[str, Any]] = None,
+        is_panel_mode: bool = False,
     ):
         self.session_id: str = session_id or str(uuid.uuid4())
         self.scenario_id: str = scenario_id
         self.topic: Optional[str] = topic
         self.difficulty: str = difficulty.lower()
         self.persona_tone: Optional[str] = persona_tone
+        self.context_dossier: Optional[Dict[str, Any]] = context_dossier
+        self.is_panel_mode: bool = is_panel_mode
 
         # Initial pressure based on difficulty
         initial_pressure = {
@@ -45,9 +60,30 @@ class DebateEngine:
             topic=topic,
             pressure_level=self.pressure_level,
             persona_tone=self.persona_tone,
+            context_dossier=self.context_dossier,
         )
+
+        # Multi-Interviewer Panel configuration
+        self.panel: Optional[InterviewerPanel] = None
+        self.current_speaker_name: str = self.persona.name
+        self.current_speaker_voice: str = self.persona.speaker
+
+        if self.is_panel_mode:
+            self.panel = get_interviewer_panel(scenario_id)
+            opening_p = self.panel.get_panelist(self.panel.opening_panelist_id)
+            if opening_p:
+                self.current_speaker_name = opening_p.name
+                self.current_speaker_voice = opening_p.speaker
+            self._apply_panel_persona()
+
         self.llm_client: LLMClient = llm_client or LLMClient()
         self.scorer: ComposureScorer = ComposureScorer(initial_score=85)
+        parsed_dossier = ContextDossier.from_dict(context_dossier) if context_dossier else None
+        self.fact_auditor: FactAuditor = FactAuditor(parsed_dossier)
+        self.math_auditor: MathAuditor = MathAuditor()
+        self.tactic_detector: TacticDetector = TacticDetector()
+        self.last_detected_tactic: Optional[RhetoricalTactic] = None
+        self.pending_rectification: Optional[str] = None
 
         self.round_number: int = 0
         self.history: List[Dict[str, Any]] = []
@@ -72,6 +108,19 @@ class DebateEngine:
             "interrupted": False,
         })
         return opening
+
+    def _apply_panel_persona(self) -> None:
+        """Keep panel-mode prompt, opening, and speaker metadata attached after persona refreshes."""
+        if not self.is_panel_mode:
+            return
+        if self.panel is None:
+            self.panel = get_interviewer_panel(self.scenario_id)
+        self.persona.system_prompt = build_panel_system_prompt(
+            self.panel,
+            pressure_level=self.pressure_level,
+            context_dossier=self.context_dossier,
+        )
+        self.persona.opening_statement = self.panel.opening_statement
 
     def check_fluff_interruption(self, partial_text: str, hesitation_sec: float = 0.0) -> Optional[str]:
         """Determine if user stalling or disfluency warrants an adversarial interruption."""
@@ -145,7 +194,9 @@ class DebateEngine:
             topic=self.topic,
             pressure_level=self.pressure_level,
             persona_tone=self.persona_tone,
+            context_dossier=self.context_dossier,
         )
+        self._apply_panel_persona()
 
     def record_user_turn(
         self,
@@ -154,7 +205,7 @@ class DebateEngine:
         hesitation_sec: float = 0.0,
         was_barge_in: bool = False,
     ) -> TelemetrySnapshot:
-        """Register the user's spoken answer and compute composure metrics."""
+        """Register the user's spoken answer, compute composure metrics, and audit factual fidelity."""
         self.status = "thinking"
         snapshot = self.scorer.evaluate_turn(
             transcript=transcript,
@@ -163,6 +214,59 @@ class DebateEngine:
             pressure_level=self.pressure_level,
             was_barge_in=was_barge_in,
         )
+
+        rel_sec = round(max(0.0, time.time() - self.start_time), 1)
+
+        # Real-time forensic fact checking against uploaded context
+        fact_result = self.fact_auditor.audit_user_turn(transcript)
+        if fact_result.has_audit_event:
+            for item in fact_result.verified_items:
+                self.bookmarks.append({
+                    "id": str(uuid.uuid4())[:8],
+                    "type": "fact_verified",
+                    "timestamp": rel_sec,
+                    "round": self.round_number,
+                    "label": f"Verified: {item.metric_name}",
+                    "quote": f"Cited '{item.user_stated_raw}' (Exact match: {item.ground_truth_raw})",
+                    "why": f"Accurately defended {item.metric_name} in accordance with authentic source document.",
+                    "reframe": "Accurate quantitative citations solidify composure and dismantle opponent skepticism.",
+                })
+            for item in fact_result.discrepancies:
+                self.bookmarks.append({
+                    "id": str(uuid.uuid4())[:8],
+                    "type": "fact_discrepancy",
+                    "timestamp": rel_sec,
+                    "round": self.round_number,
+                    "label": f"Factual Blunder: {item.metric_name}",
+                    "quote": f"Spoke '{item.user_stated_raw}' vs Document '{item.ground_truth_raw}'",
+                    "why": item.discrepancy_note,
+                    "reframe": f"Anchor precisely to verified ground-truth data: {item.metric_name} is {item.ground_truth_raw}.",
+                })
+                # Set pending adversarial rectification salvo for next AI response
+                self.pending_rectification = item.rectification_salvo
+                # Composure penalty for contradicting uploaded document
+                self.scorer.score = max(10.0, self.scorer.score - 12.0)
+                snapshot.composure_score = max(10.0, snapshot.composure_score - 12.0)
+
+        # Real-time Math & Contradiction Trap Auditor (tracks cross-turn claims and arithmetic)
+        math_result = self.math_auditor.audit_user_turn(transcript, self.round_number)
+        if math_result.has_contradiction and math_result.discrepancy:
+            disc = math_result.discrepancy
+            self.bookmarks.append({
+                "id": str(uuid.uuid4())[:8],
+                "type": "math_contradiction",
+                "timestamp": rel_sec,
+                "round": self.round_number,
+                "label": f"Math Trap: {disc.rule_type.replace('_', ' ').title()}",
+                "quote": f"Claimed '{transcript[:90]}...'",
+                "why": disc.description,
+                "reframe": "Verify arithmetic and unit economics before uttering metrics under adversarial pressure.",
+            })
+            # Immediate rectification salvo has highest attack priority
+            self.pending_rectification = math_result.immediate_rectification_salvo
+            self.scorer.score = max(10.0, self.scorer.score - 15.0)
+            snapshot.composure_score = max(10.0, snapshot.composure_score - 15.0)
+
         self.update_pressure(snapshot)
 
         self.history.append({
@@ -172,9 +276,10 @@ class DebateEngine:
             "timestamp": time.time(),
             "telemetry": snapshot.to_dict(),
             "barge_in": was_barge_in,
+            "fact_audit": fact_result.to_dict() if fact_result.has_audit_event else None,
+            "math_audit": math_result.to_dict() if math_result.has_contradiction else None,
         })
 
-        rel_sec = round(max(0.0, time.time() - self.start_time), 1)
         if hesitation_sec >= 1.8:
             self.bookmarks.append({
                 "id": str(uuid.uuid4())[:8],
@@ -283,19 +388,37 @@ class DebateEngine:
                 content += " [INTERRUPTED BY USER]"
             messages.append({"role": role, "content": content})
 
+        system_prompt = self.persona.system_prompt
+        if self.pending_rectification:
+            system_prompt += (
+                f"\n\nIMMEDIATE FACT RECTIFICATION DIRECTIVE: The user misstated a number or contradicted their document! "
+                f"Attack their factual error immediately: '{self.pending_rectification}'"
+            )
+            self.pending_rectification = None
+
         accumulated_clauses = []
+        is_first_clause = True
+
         try:
             async for clause in self.llm_client.stream_sentence_chunks(
                 messages=messages,
-                system_prompt=self.persona.system_prompt,
+                system_prompt=system_prompt,
                 temperature=0.7,
                 max_tokens=55,
             ):
+                if is_first_clause and self.is_panel_mode and self.panel:
+                    panelist, clean_clause = parse_panel_turn(clause, self.panel)
+                    self.current_speaker_name = panelist.name
+                    self.current_speaker_voice = panelist.speaker
+                    clause = clean_clause
+                    is_first_clause = False
+
                 accumulated_clauses.append(clause)
                 yield clause
         finally:
             full_response = " ".join(accumulated_clauses).strip()
             self.last_ai_text = full_response
+            self.last_detected_tactic = self.tactic_detector.detect_tactic(full_response)
             self.is_ai_speaking = False
             self.history.append({
                 "role": "ai",
@@ -303,6 +426,9 @@ class DebateEngine:
                 "round": self.round_number,
                 "timestamp": time.time(),
                 "interrupted": False,
+                "speaker": self.current_speaker_name,
+                "voice": self.current_speaker_voice,
+                "tactic": self.last_detected_tactic.to_dict() if self.last_detected_tactic else None,
             })
 
     async def generate_adversary_response(self) -> AsyncIterator[str]:
@@ -320,11 +446,19 @@ class DebateEngine:
                 content += " [INTERRUPTED BY USER]"
             messages.append({"role": role, "content": content})
 
+        system_prompt = self.persona.system_prompt
+        if self.pending_rectification:
+            system_prompt += (
+                f"\n\nIMMEDIATE FACT RECTIFICATION DIRECTIVE: The user misstated a number or contradicted their document! "
+                f"Attack their factual error immediately: '{self.pending_rectification}'"
+            )
+            self.pending_rectification = None
+
         accumulated_chunks = []
         try:
             async for token in self.llm_client.stream_turn(
                 messages=messages,
-                system_prompt=self.persona.system_prompt,
+                system_prompt=system_prompt,
                 temperature=0.7,
                 max_tokens=60,
             ):
@@ -419,6 +553,11 @@ class DebateEngine:
         report["strongest_answer"] = heuristic.get("strongest_answer")
         report["executive_reframes"] = heuristic.get("executive_reframes", [])
         report["bookmarks"] = self.get_bookmarks_with_fallbacks()
+        report["has_context"] = bool(self.context_dossier)
+        report["ground_truth_audit"] = self.fact_auditor.get_audit_summary()
+        report["math_audit"] = self.math_auditor.get_summary()
+        report["is_panel_mode"] = self.is_panel_mode
+        report["panel"] = self.panel.to_dict() if self.is_panel_mode and self.panel else None
 
         return report
 
@@ -430,6 +569,8 @@ class DebateEngine:
             "topic": self.topic or getattr(self.persona, "description", "Adversarial Sparring"),
             "persona_name": self.persona.name,
             "difficulty": self.difficulty,
+            "has_context": bool(self.context_dossier),
+            "context_dossier": self.context_dossier,
         }
 
         user_turns = [h for h in self.history if h.get("role") == "user"]
@@ -490,8 +631,12 @@ class DebateEngine:
             "strongest_answer": llm_eval.get("strongest_answer"),
             "executive_reframes": llm_eval.get("executive_reframes", []),
             "bookmarks": self.get_bookmarks_with_fallbacks(),
+            "has_context": bool(self.context_dossier),
+            "ground_truth_audit": self.fact_auditor.get_audit_summary(),
+            "math_audit": self.math_auditor.get_summary(),
+            "is_panel_mode": self.is_panel_mode,
+            "panel": self.panel.to_dict() if self.is_panel_mode and self.panel else None,
         }
 
         self._cached_report = report
         return report
-
