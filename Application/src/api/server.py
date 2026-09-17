@@ -53,13 +53,17 @@ app = FastAPI(
     version="0.1.0",
 )
 
-ALLOWED_ORIGIN_REGEX = r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$"
+import os
+
+ALLOWED_ORIGIN_REGEX = r"^https?://(localhost|127\.0\.0\.1|([a-zA-Z0-9-]+\.)*vercel\.app|([a-zA-Z0-9-]+\.)*railway\.app)(:\d+)?$"
 ALLOWED_ORIGINS = [
     "http://localhost:5173",
     "http://localhost:3000",
     "http://127.0.0.1:5173",
     "http://127.0.0.1:3000",
 ]
+extra_origins = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()]
+ALLOWED_ORIGINS.extend(extra_origins)
 
 
 def is_allowed_origin(origin: str) -> bool:
@@ -69,7 +73,11 @@ def is_allowed_origin(origin: str) -> bool:
     if any(norm == o.rstrip("/") for o in ALLOWED_ORIGINS):
         return True
     import re
-    return bool(re.match(ALLOWED_ORIGIN_REGEX, norm))
+    if re.match(ALLOWED_ORIGIN_REGEX, norm):
+        return True
+    if norm.endswith(".vercel.app") or norm.endswith(".railway.app"):
+        return True
+    return False
 
 
 # Enable CORS for browser frontend
@@ -81,6 +89,7 @@ app.add_middleware(
     allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
+
 
 
 class WebSocketChannel:
