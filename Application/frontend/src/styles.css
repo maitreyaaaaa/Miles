@@ -6008,55 +6008,7 @@ p {
   }
 }
 
-/* INFINITE MARQUEE TICKER BANNER (Clean White Strip with Lime Accents) */
-.marquee-ticker-container {
-  width: 100%;
-  overflow: hidden;
-  background: #ffffff;
-  border-top: 1px solid #e4e4e7;
-  border-bottom: 1px solid #e4e4e7;
-  padding: 18px 0;
-  position: relative;
-  z-index: 10;
-  user-select: none;
-}
 
-.marquee-track {
-  display: flex;
-  width: max-content;
-  animation: marqueeScroll 28s linear infinite;
-}
-
-.marquee-ticker-container:hover .marquee-track {
-  animation-play-state: paused;
-}
-
-.marquee-content {
-  display: flex;
-  align-items: center;
-  gap: 24px;
-  padding-right: 24px;
-  font-family: var(--font-sans);
-  font-size: 0.82rem;
-  font-weight: 800;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: #52525b;
-}
-
-.marquee-star {
-  color: #65a30d;
-  font-size: 1rem;
-}
-
-@keyframes marqueeScroll {
-  from {
-    transform: translateX(0);
-  }
-  to {
-    transform: translateX(-50%);
-  }
-}
 
 /* MARKETING SECTIONS GENERAL (White Backgrounds) */
 .marketing-section {
@@ -7601,7 +7553,6 @@ p {
   .hero-featured-grid,
   .hero-ambient-lines span,
   .hero-rotating-word,
-  .marquee-track,
   .badge-dot,
   .radar-ring,
   .radar-pulse,

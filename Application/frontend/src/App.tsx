@@ -9,6 +9,8 @@ import { ContextUploadModal } from "./components/ContextUploadModal";
 import { MeetingSchedulerModal } from "./components/MeetingSchedulerModal";
 import { MarketingLanding } from "./components/MarketingLanding";
 import RubberSegment from "./components/RubberSegment";
+import ShinyText from "./components/ShinyText";
+import DecryptedText from "./components/DecryptedText";
 import type {
   AiState,
   BattleDossier,
@@ -618,7 +620,7 @@ function App() {
         {/* ARENA INTRO BANNER */}
         <div className="arena-hero-banner">
           <div className="arena-badge-pill">
-            <span>Verbal Sparring Arena</span>
+            <ShinyText text="Verbal Sparring Arena" speed={4} />
           </div>
           <h1 className="arena-title">Calibrate your adversary & combat rules</h1>
           <p className="arena-subtitle">
@@ -726,7 +728,7 @@ function App() {
                       }}
                     >
                       <span className="scenario-tag-badge">{item.tag}</span>
-                      <span className="scenario-title-bold">{item.label}</span>
+                      <span className="scenario-title-bold">{scenario === item.id && !topic.trim() ? <DecryptedText text={item.label} animateOn="view" speed={35} maxIterations={8} /> : item.label}</span>
                       <small>{item.topic}</small>
                     </button>
                   ))}
@@ -795,13 +797,13 @@ function App() {
             {/* Bottom Quick Start CTA */}
             <div className="white-section-cta">
               <button
-                className="hero-start-cta"
-                type="button"
-                onClick={startDebate}
-                disabled={topicPrep.status === "thinking"}
-              >
-                {topicPrep.status === "thinking" ? "Preparing..." : "Start debate"}
-              </button>
+                  className="hero-start-cta"
+                  type="button"
+                  onClick={startDebate}
+                  disabled={topicPrep.status === "thinking"}
+                >
+                  {topicPrep.status === "thinking" ? "Preparing..." : "Start debate"}
+                </button>
             </div>
           </div>
         </section>

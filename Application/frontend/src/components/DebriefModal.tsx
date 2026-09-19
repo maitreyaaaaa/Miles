@@ -26,6 +26,7 @@ import type { DebateReportEvent, RematchConfig, RematchEvaluationResult, Telemet
 import type { RecordedTurnAudio } from "../audio";
 import { MomentReplay } from "./MomentReplay";
 import { RematchModal } from "./RematchModal";
+import CountUp from "./CountUp";
 
 interface DebriefModalProps {
   report: DebateReportEvent;
@@ -410,7 +411,7 @@ export const DebriefModal: React.FC<DebriefModalProps> = ({
           </button>
           <div className="debrief-score-pill">
             <span className="score-pill-label">Performance</span>
-            <span className="score-pill-value">{overallScore}%</span>
+            <span className="score-pill-value"><CountUp to={overallScore} duration={1.2} />%</span>
           </div>
           <button
             type="button"

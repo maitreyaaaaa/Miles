@@ -1,6 +1,7 @@
 import React from "react";
 import { AlertCircle, ArrowRight, Crosshair, HelpCircle, ShieldAlert, Swords } from "lucide-react";
 import type { BattleDossier } from "../types";
+import DecryptedText from "./DecryptedText";
 
 interface DossierPreviewProps {
   dossier: BattleDossier;
@@ -27,7 +28,7 @@ export const DossierPreview: React.FC<DossierPreviewProps> = ({ dossier, onStart
       <div className="dossier-thesis-box">
         <div className="dossier-thesis-label">
           <ShieldAlert size={14} />
-          <span>Contrarian Thesis ({dossier.persona_name || "Adversary"})</span>
+          <span>Contrarian Thesis ({dossier.persona_name ? <DecryptedText text={dossier.persona_name} speed={30} maxIterations={8} animateOn="view" /> : "Adversary"})</span>
         </div>
         <p className="dossier-thesis-text">
           "{dossier.contrarian_thesis}"
@@ -91,13 +92,13 @@ export const DossierPreview: React.FC<DossierPreviewProps> = ({ dossier, onStart
           <span>Max Monologue: {dossier.difficulty_profile?.rambling_threshold_sec || 10.0}s</span>
         </div>
         <button
-          type="button"
-          onClick={onStart}
-          className="dossier-start-btn"
-        >
-          <span>Begin Sparring</span>
-          <ArrowRight size={14} />
-        </button>
+            type="button"
+            onClick={onStart}
+            className="dossier-start-btn"
+          >
+            <span>Begin Sparring</span>
+            <ArrowRight size={14} />
+          </button>
       </div>
     </div>
   );

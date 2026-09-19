@@ -15,6 +15,10 @@ import {
   Radio,
 } from "lucide-react";
 import type { ScenarioId } from "../types";
+import { ShinyText } from "./ShinyText";
+import { SpotlightCard } from "./SpotlightCard";
+import { BlurText } from "./BlurText";
+import { CountUp } from "./CountUp";
 
 interface MarketingLandingProps {
   onStartDebate: (scenarioId?: ScenarioId, customTopic?: string) => void;
@@ -110,7 +114,7 @@ export const MarketingLanding: React.FC<MarketingLandingProps> = ({
         {/* TOP CORNER EDITORIAL BADGES */}
         <div className="hero-top-corners">
           <div className="hero-corner-item hero-corner-tl">
-            <span>STOP WINGING IT</span>
+            <ShinyText text="STOP WINGING IT" speed={5} />
             <span>LOCK IN FIRST</span>
           </div>
           <div className="hero-corner-item hero-corner-tr">
@@ -169,7 +173,9 @@ export const MarketingLanding: React.FC<MarketingLandingProps> = ({
 
           {/* HEADLINE */}
           <h1 className="hero-headline">
-            Practice the <span className="headline-cursive">conversation</span> before it gets real.
+            <BlurText text="Practice the" delay={45} />{" "}
+            <span className="headline-cursive">conversation</span>{" "}
+            <BlurText text="before it gets real." delay={45} />
           </h1>
 
           {/* SUBTITLE */}
@@ -179,13 +185,15 @@ export const MarketingLanding: React.FC<MarketingLandingProps> = ({
           </p>
 
           {/* PRIMARY CALL TO ACTION BUTTON */}
-          <button
-            type="button"
-            className="hero-start-cta"
-            onClick={() => onStartDebate(selectedHeroScenario)}
-          >
-            Start a round
-          </button>
+          <div style={{ display: "flex", justifyContent: "center" }}>
+            <button
+                type="button"
+                className="hero-start-cta"
+                onClick={() => onStartDebate(selectedHeroScenario)}
+              >
+                Start a round
+              </button>
+          </div>
 
           {/* CUSTOM TOPIC CAPSULE */}
           <div className="hero-topic-maker">
@@ -262,54 +270,6 @@ export const MarketingLanding: React.FC<MarketingLandingProps> = ({
         {/* MULTI-STOP SMOOTH GRADIENT FADE */}
         <div className="hero-gradient-fade" />
       </section>
-
-      {/* =========================================================================
-          INFINITE MARQUEE TICKER BANNER (Dynamic velocity capabilities band)
-          ========================================================================= */}
-      <div className="marquee-ticker-container">
-        <div className="marquee-track">
-          <div className="marquee-content">
-            <span>PITCH PRACTICE</span>
-            <span className="marquee-star">✦</span>
-            <span>SALARY TALK</span>
-            <span className="marquee-star">✦</span>
-            <span>FAST CUT-INS</span>
-            <span className="marquee-star">✦</span>
-            <span>CALM CHECK</span>
-            <span className="marquee-star">✦</span>
-            <span>NO FAKE HYPE</span>
-            <span className="marquee-star">✦</span>
-            <span>TWO-ON-ONE PRESSURE</span>
-            <span className="marquee-star">✦</span>
-            <span>UMM COUNTER</span>
-            <span className="marquee-star">✦</span>
-            <span>AFTER-ROUND NOTES</span>
-            <span className="marquee-star">✦</span>
-            <span>TALK OVER EACH OTHER MODE</span>
-            <span className="marquee-star">✦</span>
-          </div>
-          <div className="marquee-content" aria-hidden="true">
-            <span>PITCH PRACTICE</span>
-            <span className="marquee-star">✦</span>
-            <span>SALARY TALK</span>
-            <span className="marquee-star">✦</span>
-            <span>FAST CUT-INS</span>
-            <span className="marquee-star">✦</span>
-            <span>CALM CHECK</span>
-            <span className="marquee-star">✦</span>
-            <span>NO FAKE HYPE</span>
-            <span className="marquee-star">✦</span>
-            <span>TWO-ON-ONE PRESSURE</span>
-            <span className="marquee-star">✦</span>
-            <span>UMM COUNTER</span>
-            <span className="marquee-star">✦</span>
-            <span>AFTER-ROUND NOTES</span>
-            <span className="marquee-star">✦</span>
-            <span>TALK OVER EACH OTHER MODE</span>
-            <span className="marquee-star">✦</span>
-          </div>
-        </div>
-      </div>
 
       <section className="product-proof-strip reveal-on-scroll" aria-label="Product evidence">
         <div className="proof-strip-inner">
@@ -418,7 +378,7 @@ export const MarketingLanding: React.FC<MarketingLandingProps> = ({
 
           <div className="bento-grid">
             {/* CARD 1: Barge-in & Interruption */}
-            <div className="bento-card bento-card-large reveal-on-scroll">
+            <SpotlightCard className="bento-card bento-card-large reveal-on-scroll" spotlightColor="rgba(198, 244, 50, 0.12)">
               <div className="bento-card-icon-box">
                 <Zap size={22} className="bento-icon" />
                 <span className="bento-tech-tag">Fast voice mode</span>
@@ -443,10 +403,10 @@ export const MarketingLanding: React.FC<MarketingLandingProps> = ({
                   <div className="meter-bar-fill" style={{ width: "24%" }} />
                 </div>
               </div>
-            </div>
+            </SpotlightCard>
 
             {/* CARD 2: Composure & Cadence HUD */}
-            <div className="bento-card reveal-on-scroll">
+            <SpotlightCard className="bento-card reveal-on-scroll" spotlightColor="rgba(198, 244, 50, 0.12)">
               <div className="bento-card-icon-box">
                 <Gauge size={22} className="bento-icon" />
                 <span className="bento-tech-tag">Calm check</span>
@@ -458,15 +418,15 @@ export const MarketingLanding: React.FC<MarketingLandingProps> = ({
               </p>
               <div className="bento-hud-preview">
                 <div className="hud-pill">
-                  <span className="hud-metric">100</span>
+                  <span className="hud-metric"><CountUp to={100} duration={1.2} /></span>
                   <span className="hud-lbl">Calm</span>
                 </div>
                 <div className="hud-pill">
-                  <span className="hud-metric">142</span>
+                  <span className="hud-metric"><CountUp to={142} duration={1.2} /></span>
                   <span className="hud-lbl">Words per min</span>
                 </div>
                 <div className="hud-pill">
-                  <span className="hud-metric">0</span>
+                  <span className="hud-metric"><CountUp to={0} duration={1.2} /></span>
                   <span className="hud-lbl">Filler words</span>
                 </div>
               </div>
@@ -478,10 +438,10 @@ export const MarketingLanding: React.FC<MarketingLandingProps> = ({
                 <span />
                 <span />
               </div>
-            </div>
+            </SpotlightCard>
 
             {/* CARD 3: Anti-Sycophancy Policy */}
-            <div className="bento-card reveal-on-scroll">
+            <SpotlightCard className="bento-card reveal-on-scroll" spotlightColor="rgba(198, 244, 50, 0.12)">
               <div className="bento-card-icon-box">
                 <Target size={22} className="bento-icon" />
                 <span className="bento-tech-tag">No glazing</span>
@@ -496,10 +456,10 @@ export const MarketingLanding: React.FC<MarketingLandingProps> = ({
                 <span>ask for proof</span>
                 <span>stop the dodge</span>
               </div>
-            </div>
+            </SpotlightCard>
 
             {/* CARD 4: Document Weaponization */}
-            <div className="bento-card reveal-on-scroll">
+            <SpotlightCard className="bento-card reveal-on-scroll" spotlightColor="rgba(198, 244, 50, 0.12)">
               <div className="bento-card-icon-box">
                 <FileText size={22} className="bento-icon" />
                 <span className="bento-tech-tag">Bring receipts</span>
@@ -514,10 +474,10 @@ export const MarketingLanding: React.FC<MarketingLandingProps> = ({
                 <span />
                 <span />
               </div>
-            </div>
+            </SpotlightCard>
 
             {/* CARD 5: Multi-Agent Boardroom Panel */}
-            <div className="bento-card reveal-on-scroll">
+            <SpotlightCard className="bento-card reveal-on-scroll" spotlightColor="rgba(198, 244, 50, 0.12)">
               <div className="bento-card-icon-box">
                 <Users size={22} className="bento-icon" />
                 <span className="bento-tech-tag">Two-on-one</span>
@@ -532,10 +492,10 @@ export const MarketingLanding: React.FC<MarketingLandingProps> = ({
                 <span>GC</span>
                 <span>YOU</span>
               </div>
-            </div>
+            </SpotlightCard>
 
             {/* CARD 6: Executive Debrief PDF */}
-            <div className="bento-card reveal-on-scroll">
+            <SpotlightCard className="bento-card reveal-on-scroll" spotlightColor="rgba(198, 244, 50, 0.12)">
               <div className="bento-card-icon-box">
                 <Sparkles size={22} className="bento-icon" />
                 <span className="bento-tech-tag">After-round notes</span>
@@ -549,7 +509,7 @@ export const MarketingLanding: React.FC<MarketingLandingProps> = ({
                 <CheckCircle2 size={15} />
                 <span>3 practice drills ready</span>
               </div>
-            </div>
+            </SpotlightCard>
           </div>
         </div>
       </section>
@@ -715,7 +675,9 @@ export const MarketingLanding: React.FC<MarketingLandingProps> = ({
         <div className="section-container cta-container">
           <div className="cta-glow-spot" />
           <div className="cta-content-box">
-            <span className="cta-eyebrow">READY TO STOP GUESSING?</span>
+            <span className="cta-eyebrow">
+              <ShinyText text="READY TO STOP GUESSING?" speed={4} />
+            </span>
             <h2 className="cta-title">
               Stop rehearsing in the mirror.<br />
               Let{" "}
@@ -731,15 +693,15 @@ export const MarketingLanding: React.FC<MarketingLandingProps> = ({
 
             <div className="cta-action-row">
               <button
-                type="button"
-                className="cta-primary-btn"
-                onClick={() => onStartDebate()}
-              >
-                <span>Start a round</span>
-                <span className="cta-icon-island">
-                  <ArrowRight size={16} />
-                </span>
-              </button>
+                  type="button"
+                  className="cta-primary-btn"
+                  onClick={() => onStartDebate()}
+                >
+                  <span>Start a round</span>
+                  <span className="cta-icon-island">
+                    <ArrowRight size={16} />
+                  </span>
+                </button>
 
               <button
                 type="button"
