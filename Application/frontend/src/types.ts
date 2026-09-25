@@ -408,8 +408,10 @@ export interface MeetingSession {
   has_debrief: boolean;
   debrief_report?: DebateReportEvent | null;
   error_message?: string | null;
-  provider_mode?: "mock" | "mock_fallback" | "headless" | "external" | string;
+  provider_mode?: "mock" | "mock_fallback" | "headless" | "external" | "recall_ai" | string;
   provider_notice?: string | null;
+  recall_bot_id?: string | null;
+  scheduled_join_at?: string | null;
 }
 
 export interface RematchConfig {

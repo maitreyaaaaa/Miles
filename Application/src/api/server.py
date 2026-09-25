@@ -10,7 +10,7 @@ import struct
 import time
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, File, HTTPException, Query, Response, UploadFile, WebSocket, WebSocketDisconnect, status
+from fastapi import FastAPI, File, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
@@ -18,6 +18,8 @@ from pydantic import BaseModel
 from src.meeting.models import MeetingConfig, MeetingSession, MeetingStatus
 from src.meeting.scheduler import get_meeting_scheduler, generate_meet_code
 from src.meeting.debrief_dispatcher import get_debrief_dispatcher
+from src.meeting.provider import RecallMeetBotProvider
+from src.meeting.recall_service import RecallService, RecallAPIError
 
 from src.analytics.composure_scorer import ComposureScorer
 from src.config import config
@@ -190,6 +192,18 @@ class ScheduleMeetingRequest(BaseModel):
     topic: Optional[str] = None
     persona_tone: Optional[str] = None
     max_duration_seconds: Optional[int] = 1800
+    join_at: Optional[str] = None
+    schedule_recall_bot: Optional[bool] = True
+
+
+class LaunchRecallBotRequest(BaseModel):
+    meeting_url: str
+    persona_id: Optional[str] = "vc_pitch"
+    bot_name: Optional[str] = None
+    join_at: Optional[str] = None
+    topic: Optional[str] = None
+    difficulty: Optional[str] = "hard"
+    context_id: Optional[str] = None
 
 
 class GoogleDriveImportRequest(BaseModel):
@@ -669,14 +683,31 @@ async def get_session_report(session_id: str):
 
 @app.post("/api/meeting/schedule")
 async def schedule_google_meet(req: ScheduleMeetingRequest):
-    """Schedule a Google Meet sparring session for Miles."""
+    """Schedule a Google Meet sparring session for Miles, with optional Google Calendar provisioning & Recall bot scheduling."""
     scheduler = get_meeting_scheduler()
+    meet_url = req.meet_url
+
+    calendar_provisioned = False
+    event_id = None
+    if not meet_url and config.google_calendar_enabled:
+        try:
+            provisioner = GoogleMeetProvisioner()
+            res = await provisioner.create_meeting_room(
+                title=f"Miles Sparring: {req.topic or 'Debate'}",
+                duration_minutes=int((req.max_duration_seconds or 1800) / 60),
+            )
+            meet_url = res.get("meet_url")
+            calendar_provisioned = res.get("is_real_meet", False)
+            event_id = res.get("event_id")
+        except Exception as e:
+            logger.warning(f"[API] Error auto-provisioning Google Meet for schedule: {e}")
+
     cfg = MeetingConfig(
         max_duration_seconds=req.max_duration_seconds or 1800,
         audio_only=True,
     )
     session = scheduler.schedule_meeting(
-        meet_url=req.meet_url,
+        meet_url=meet_url,
         context_id=req.context_id,
         persona_id=req.persona_id or "vc_pitch",
         difficulty=req.difficulty or "hard",
@@ -684,7 +715,37 @@ async def schedule_google_meet(req: ScheduleMeetingRequest):
         persona_tone=req.persona_tone,
         config=cfg,
     )
-    return session.to_dict()
+
+    scheduled_bot_id = None
+    if req.schedule_recall_bot and req.join_at and meet_url and config.recall_ai_enabled:
+        try:
+            recall_svc = RecallService()
+            bot_data = await recall_svc.create_bot(
+                meeting_url=meet_url,
+                bot_name=f"Miles AI ({session.persona_id.replace('_', ' ').title()})",
+                join_at=req.join_at,
+                metadata={
+                    "session_id": session.meeting_id,
+                    "persona_id": session.persona_id,
+                    "topic": req.topic or "Sparring",
+                },
+            )
+            scheduled_bot_id = bot_data.get("id")
+            if isinstance(scheduler.bot_provider, RecallMeetBotProvider):
+                scheduler.bot_provider.active_bot_ids[session.meeting_id] = scheduled_bot_id
+                scheduler.bot_provider.bot_statuses[session.meeting_id] = "scheduled"
+            logger.info(f"[API] Scheduled Recall bot {scheduled_bot_id} for join_at: {req.join_at}")
+        except Exception as e:
+            logger.warning(f"[API] Could not schedule Recall bot for join_at {req.join_at}: {e}")
+
+    result = session.to_dict()
+    if calendar_provisioned:
+        result["calendar_event_id"] = event_id
+        result["is_real_meet"] = True
+    if scheduled_bot_id:
+        result["recall_bot_id"] = scheduled_bot_id
+        result["scheduled_join_at"] = req.join_at
+    return result
 
 
 @app.post("/api/meeting/{meeting_id}/start")
@@ -736,6 +797,126 @@ async def generate_instant_link(access_token: Optional[str] = Query(None)):
         "provider_mode": scheduler.bot_provider.provider_mode,
         "provider_notice": res.get("provider_notice") or scheduler.bot_provider.provider_notice,
     }
+
+
+# ==========================================
+# Recall.ai Meeting Bot Endpoints
+# ==========================================
+
+
+@app.post("/api/meeting/bot/launch")
+async def launch_meeting_bot(req: LaunchRecallBotRequest):
+    """Launch an ad-hoc or scheduled Recall.ai bot into any Google Meet, Zoom, or Teams call."""
+    meeting_url = req.meeting_url.strip()
+    if not meeting_url or not (meeting_url.startswith("http://") or meeting_url.startswith("https://")):
+        raise HTTPException(status_code=400, detail="A valid meeting URL (Google Meet, Zoom, Teams) is required.")
+
+    recall_svc = RecallService()
+    if not recall_svc.api_key:
+        raise HTTPException(
+            status_code=400,
+            detail="RECALL_AI_API_KEY is not configured in .env. Please configure your Recall.ai API key.",
+        )
+
+    persona_id = req.persona_id or "vc_pitch"
+    persona_title = persona_id.replace("_", " ").title()
+    bot_name = req.bot_name or f"Miles AI ({persona_title})"
+
+    scheduler = get_meeting_scheduler()
+    cfg = MeetingConfig(max_duration_seconds=1800, audio_only=True)
+    session = scheduler.schedule_meeting(
+        meet_url=meeting_url,
+        context_id=req.context_id,
+        persona_id=persona_id,
+        difficulty=req.difficulty or "hard",
+        topic=req.topic,
+        config=cfg,
+    )
+
+    metadata = {
+        "session_id": session.meeting_id,
+        "persona_id": persona_id,
+        "topic": req.topic or "Sparring",
+        "difficulty": req.difficulty or "hard",
+    }
+
+    try:
+        bot_data = await recall_svc.create_bot(
+            meeting_url=meeting_url,
+            bot_name=bot_name,
+            join_at=req.join_at,
+            metadata=metadata,
+        )
+        bot_id = bot_data.get("id")
+        if isinstance(scheduler.bot_provider, RecallMeetBotProvider):
+            scheduler.bot_provider.active_bot_ids[session.meeting_id] = bot_id
+            scheduler.bot_provider.bot_statuses[session.meeting_id] = "joining_call"
+
+        return {
+            "status": "success",
+            "bot_id": bot_id,
+            "meeting_id": session.meeting_id,
+            "meeting_url": meeting_url,
+            "bot_name": bot_name,
+            "join_at": req.join_at,
+            "bot_details": bot_data,
+        }
+    except RecallAPIError as e:
+        raise HTTPException(status_code=e.status_code, detail=f"Recall.ai error: {e.detail}")
+    except Exception as e:
+        logger.error(f"[API] Error launching Recall bot: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/meeting/bot/{bot_id}")
+async def get_bot_status(bot_id: str):
+    """Query real-time status, participants, and lifecycle events of a Recall.ai bot."""
+    recall_svc = RecallService()
+    try:
+        return await recall_svc.get_bot(bot_id)
+    except RecallAPIError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
+
+
+@app.post("/api/meeting/bot/{bot_id}/leave")
+async def leave_meeting_bot(bot_id: str):
+    """Instruct an active Recall.ai bot to exit the meeting room."""
+    recall_svc = RecallService()
+    try:
+        success = await recall_svc.leave_call(bot_id)
+        return {"success": success, "bot_id": bot_id, "message": "Bot instructed to leave meeting call."}
+    except RecallAPIError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
+
+
+@app.get("/api/meeting/bots")
+async def list_recall_bots(limit: int = Query(20, ge=1, le=100)):
+    """List recent active and scheduled Recall bots."""
+    recall_svc = RecallService()
+    bots = await recall_svc.list_bots(limit=limit)
+    return {"bots": bots, "region": recall_svc.region}
+
+
+@app.post("/api/webhook/recall")
+async def handle_recall_webhook(request: Request):
+    """Receive and process Recall.ai webhook events with cryptographic HMAC signature verification."""
+    raw_body = await request.body()
+    headers = dict(request.headers)
+
+    if not RecallService.verify_webhook_signature(headers, raw_body):
+        logger.warning("[RecallWebhook] Unauthorized webhook signature received.")
+        raise HTTPException(status_code=401, detail="Invalid webhook signature")
+
+    try:
+        payload = json.loads(raw_body)
+        event_type = payload.get("event")
+        data = payload.get("data", {})
+        bot_id = data.get("bot_id") or data.get("bot", {}).get("id")
+        logger.info(f"[RecallWebhook] Verified webhook received: '{event_type}' for bot {bot_id}")
+        return {"status": "received", "event": event_type, "bot_id": bot_id}
+    except Exception as e:
+        logger.error(f"[RecallWebhook] Error processing webhook: {e}")
+        return {"status": "error", "detail": str(e)}
 
 
 @app.get("/api/meetings")

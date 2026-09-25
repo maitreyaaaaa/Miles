@@ -128,10 +128,11 @@ def test_google_drive_import_invalid_id():
 @pytest.mark.asyncio
 async def test_google_meet_provisioner_simulation_fallback():
     provisioner = GoogleMeetProvisioner()
-    res = await provisioner.create_meeting_room()
-    assert "meet_url" in res
-    assert "meet.google.com" in res["meet_url"]
-    assert res["is_real_meet"] is False
+    with patch.object(provisioner, "_sync_create_meeting", side_effect=RuntimeError("Calendar error")):
+        res = await provisioner.create_meeting_room()
+        assert "meet_url" in res
+        assert "meet.google.com" in res["meet_url"]
+        assert res["is_real_meet"] is False
 
 
 @pytest.mark.asyncio

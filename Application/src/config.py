@@ -31,6 +31,8 @@ class AppConfig:
 
     # Meeting Bot Provider (Recall.ai for cloud bot or local headless browser)
     recall_ai_api_key: str = os.getenv("RECALL_AI_API_KEY", "")
+    recall_ai_region: str = os.getenv("RECALL_AI_REGION", "ap-northeast-1")
+    recall_ai_webhook_secret: str = os.getenv("RECALL_AI_WEBHOOK_SECRET", "")
 
     # Notification / Email Settings
     resend_api_key: str = os.getenv("RESEND_API_KEY", "")

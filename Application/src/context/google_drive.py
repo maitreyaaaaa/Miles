@@ -167,12 +167,21 @@ class GoogleDriveService:
         if self.access_token:
             creds = Credentials(token=self.access_token)
             return build("drive", "v3", credentials=creds, cache_discovery=False)
+        elif config.google_refresh_token and config.google_client_id and config.google_client_secret:
+            creds = Credentials(
+                token=None,
+                refresh_token=config.google_refresh_token,
+                token_uri="https://oauth2.googleapis.com/token",
+                client_id=config.google_client_id,
+                client_secret=config.google_client_secret,
+            )
+            return build("drive", "v3", credentials=creds, cache_discovery=False)
         elif config.google_api_key:
             return build("drive", "v3", developerKey=config.google_api_key, cache_discovery=False)
         else:
             raise ValueError(
-                "Neither Google access_token nor GOOGLE_API_KEY is configured. "
-                "Authenticate via Google OAuth or configure GOOGLE_API_KEY in .env."
+                "Neither Google OAuth credentials nor GOOGLE_API_KEY is configured. "
+                "Authenticate via Google OAuth or configure credentials in .env."
             )
 
     async def fetch_document(self, file_id: str) -> Dict[str, Any]:

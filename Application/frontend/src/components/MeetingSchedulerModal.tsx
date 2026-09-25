@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { ContextDossier, DebateReportEvent, MeetingSession } from '../types';
 
 interface MeetingSchedulerModalProps {
@@ -18,7 +18,7 @@ export const MeetingSchedulerModal: React.FC<MeetingSchedulerModalProps> = ({
   onViewDebrief,
   backendUrl = 'http://localhost:8000',
 }) => {
-  const [activeTab, setActiveTab] = useState<'schedule' | 'history'>('schedule');
+  const [activeTab, setActiveTab] = useState<'launch' | 'history'>('launch');
   const [meetUrl, setMeetUrl] = useState('');
   const [personaId, setPersonaId] = useState('vc_pitch');
   const [difficulty, setDifficulty] = useState('hard');
@@ -28,7 +28,33 @@ export const MeetingSchedulerModal: React.FC<MeetingSchedulerModalProps> = ({
   const [actionLoadingId, setActionLoadingId] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [providerNotice, setProviderNotice] = useState<string | null>(null);
+
+  // Recall.ai State
+  const [activeBotId, setActiveBotId] = useState<string | null>(null);
+  const [activeBotStatus, setActiveBotStatus] = useState<string | null>(null);
+  const [isBotPolling, setIsBotPolling] = useState(false);
+  const [isScheduleMode, setIsScheduleMode] = useState(false);
+  const [scheduledJoinAt, setScheduledJoinAt] = useState('');
+
+  const pollIntervalRef = useRef<any>(null);
   const apiBase = backendUrl.replace(/\/$/, '');
+
+  // Detect Meeting Platform from URL
+  const getPlatformInfo = (url: string) => {
+    const lower = url.toLowerCase();
+    if (lower.includes('zoom.us')) {
+      return { name: 'Zoom Meeting', icon: '🔷', color: '#2d8cff' };
+    }
+    if (lower.includes('teams.microsoft.com') || lower.includes('teams.live.com')) {
+      return { name: 'Microsoft Teams', icon: '👥', color: '#6264a7' };
+    }
+    if (lower.includes('meet.google.com')) {
+      return { name: 'Google Meet', icon: '🎥', color: '#00ac47' };
+    }
+    return { name: 'Live Meeting', icon: '🌐', color: '#6366f1' };
+  };
+
+  const platformInfo = getPlatformInfo(meetUrl);
 
   useEffect(() => {
     if (isOpen) {
@@ -36,8 +62,46 @@ export const MeetingSchedulerModal: React.FC<MeetingSchedulerModalProps> = ({
       if (!meetUrl) {
         handleGenerateLink();
       }
+    } else {
+      stopBotPolling();
     }
+    return () => stopBotPolling();
   }, [isOpen]);
+
+  const stopBotPolling = () => {
+    if (pollIntervalRef.current) {
+      clearInterval(pollIntervalRef.current);
+      pollIntervalRef.current = null;
+    }
+    setIsBotPolling(false);
+  };
+
+  const startBotPolling = (botId: string) => {
+    stopBotPolling();
+    setIsBotPolling(true);
+
+    const poll = async () => {
+      try {
+        const res = await fetch(`${apiBase}/api/meeting/bot/${botId}`);
+        if (res.ok) {
+          const data = await res.json();
+          const changes = data.status_changes || [];
+          const latestStatus = changes.length > 0 ? changes[changes.length - 1].code : 'ready';
+          setActiveBotStatus(latestStatus);
+
+          if (['done', 'fatal', 'call_ended'].includes(latestStatus)) {
+            stopBotPolling();
+            fetchMeetings();
+          }
+        }
+      } catch (err) {
+        console.error('Bot polling error', err);
+      }
+    };
+
+    poll();
+    pollIntervalRef.current = setInterval(poll, 3000);
+  };
 
   const fetchMeetings = async () => {
     try {
@@ -65,59 +129,76 @@ export const MeetingSchedulerModal: React.FC<MeetingSchedulerModalProps> = ({
     }
   };
 
-  const handleScheduleAndStart = async () => {
+  // Launch Recall.ai Cloud Bot into the call
+  const handleLaunchRecallBot = async () => {
     if (!meetUrl.trim()) {
-      setStatusMessage('Please enter or generate a Google Meet link.');
+      setStatusMessage('Please enter a valid meeting URL (Google Meet, Zoom, Teams).');
       return;
     }
 
     setIsLoading(true);
-    setStatusMessage('Scheduling local Meet simulation session...');
+    setStatusMessage('Deploying Miles bot via Recall.ai cloud (Tokyo ap-northeast-1)...');
 
     try {
-      // 1. Schedule session
-      const schedRes = await fetch(`${apiBase}/api/meeting/schedule`, {
+      const payload: any = {
+        meeting_url: meetUrl.trim(),
+        persona_id: personaId,
+        difficulty: difficulty,
+        topic: activeContext ? `Cross-Exam on ${activeContext.title}` : 'Voice Sparring',
+        context_id: activeContext ? activeContext.context_id : null,
+      };
+
+      if (isScheduleMode && scheduledJoinAt) {
+        payload.join_at = new Date(scheduledJoinAt).toISOString();
+      }
+
+      const res = await fetch(`${apiBase}/api/meeting/bot/launch`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          meet_url: meetUrl.trim(),
-          context_id: activeContext ? activeContext.context_id : null,
-          persona_id: personaId,
-          difficulty: difficulty,
-          max_duration_seconds: maxDuration,
-        }),
+        body: JSON.stringify(payload),
       });
 
-      if (!schedRes.ok) {
-        throw new Error('Failed to schedule meeting.');
+      if (!res.ok) {
+        const errData = await res.json();
+        throw new Error(errData.detail || 'Failed to dispatch Recall bot.');
       }
 
-      const sessionData: MeetingSession = await schedRes.json();
-      setProviderNotice(sessionData.provider_notice || providerNotice);
+      const data = await res.json();
+      setActiveBotId(data.bot_id);
+      setActiveBotStatus(data.join_at ? 'scheduled' : 'joining_call');
       setStatusMessage(
-        sessionData.provider_mode === 'mock' || sessionData.provider_mode === 'mock_fallback'
-          ? 'Starting local meeting simulation. No external bot will join the Google Meet room.'
-          : `Deploying Miles bot into ${sessionData.meet_url}...`
+        data.join_at
+          ? `Bot successfully scheduled to join at ${new Date(data.join_at).toLocaleTimeString()}`
+          : `Bot dispatched (ID: ${data.bot_id}). Connecting to ${platformInfo.name}...`
       );
 
-      // 2. Launch bot into call
-      const startRes = await fetch(`${apiBase}/api/meeting/${sessionData.meeting_id}/start`, {
+      if (data.bot_id && !data.join_at) {
+        startBotPolling(data.bot_id);
+      }
+      await fetchMeetings();
+    } catch (err: any) {
+      setStatusMessage(`Error launching bot: ${err.message}`);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // Instruct Recall bot to leave meeting
+  const handleLeaveRecallBot = async () => {
+    if (!activeBotId) return;
+    setIsLoading(true);
+    try {
+      const res = await fetch(`${apiBase}/api/meeting/bot/${activeBotId}/leave`, {
         method: 'POST',
       });
-
-      if (!startRes.ok) {
-        throw new Error('Failed to start meeting session.');
+      if (res.ok) {
+        setStatusMessage('Bot has been instructed to leave the meeting call.');
+        setActiveBotStatus('call_ended');
+        stopBotPolling();
+        await fetchMeetings();
       }
-
-      setStatusMessage(
-        sessionData.provider_mode === 'mock' || sessionData.provider_mode === 'mock_fallback'
-          ? 'Miles simulation is running locally. Use this for workflow rehearsal; live Meet audio is not connected.'
-          : 'Miles has joined the Google Meet. Camera is off, listening via AssemblyAI.'
-      );
-      await fetchMeetings();
-      setActiveTab('history');
     } catch (err: any) {
-      setStatusMessage(`Error: ${err.message || 'Failed to start meeting.'}`);
+      setStatusMessage(`Error dismissing bot: ${err.message}`);
     } finally {
       setIsLoading(false);
     }
@@ -168,18 +249,21 @@ export const MeetingSchedulerModal: React.FC<MeetingSchedulerModalProps> = ({
         {/* Header */}
         <div className="modal-header">
           <div className="modal-header-left">
-            <div className="meet-icon-badge">
-              <span className="meet-camera-icon">🎥</span>
+            <div className="meet-icon-badge" style={{ backgroundColor: `${platformInfo.color}15`, borderColor: platformInfo.color }}>
+              <span className="meet-camera-icon">{platformInfo.icon}</span>
             </div>
             <div>
               <div className="meeting-title-row">
-                <h2 className="modal-title">Google Meet Sparring</h2>
-                <span className="audio-only-badge">
-                  {providerNotice?.toLowerCase().includes('recall') ? 'Live Bot Mode' : 'Sparring Call'}
+                <h2 className="modal-title">Meeting Bot & Voice Sparring</h2>
+                <span className="audio-only-badge" style={{ borderColor: platformInfo.color, color: platformInfo.color }}>
+                  {platformInfo.name}
+                </span>
+                <span className="recall-workspace-tag">
+                  Recall.ai • Tokyo (ap-northeast-1)
                 </span>
               </div>
               <p className="modal-subtitle">
-                Start or schedule a Google Meet sparring session. Miles will join the call to test your answers and track your composure.
+                Deploy Miles into your Google Meet, Zoom, or Teams call to spar live, audit facts against your dossier, and produce an executive debrief.
               </p>
             </div>
           </div>
@@ -189,10 +273,10 @@ export const MeetingSchedulerModal: React.FC<MeetingSchedulerModalProps> = ({
         {/* Tab switcher */}
         <div className="meeting-tab-bar">
           <button
-            className={`meeting-tab-btn ${activeTab === 'schedule' ? 'active' : ''}`}
-            onClick={() => setActiveTab('schedule')}
+            className={`meeting-tab-btn ${activeTab === 'launch' ? 'active' : ''}`}
+            onClick={() => setActiveTab('launch')}
           >
-            🚀 Schedule Simulation
+            🤖 Launch & Schedule Bot
           </button>
           <button
             className={`meeting-tab-btn ${activeTab === 'history' ? 'active' : ''}`}
@@ -205,16 +289,42 @@ export const MeetingSchedulerModal: React.FC<MeetingSchedulerModalProps> = ({
           </button>
         </div>
 
-        {activeTab === 'schedule' ? (
+        {activeTab === 'launch' ? (
           <div className="meeting-tab-content">
+            {/* Active Bot Status Banner (if running) */}
+            {activeBotId && (
+              <div className="active-bot-banner">
+                <div className="bot-banner-left">
+                  <span className={`status-dot-pulse ${activeBotStatus === 'in_call_recording' ? 'live' : 'pending'}`}></span>
+                  <div>
+                    <strong>Recall.ai Bot Active: <code>{activeBotId}</code></strong>
+                    <div className="bot-status-sub">
+                      Status: <span className="bot-status-code">{activeBotStatus?.replace(/_/g, ' ').toUpperCase()}</span>
+                      {isBotPolling && ' • Polling live...'}
+                    </div>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="danger-btn action-sm-btn"
+                  onClick={handleLeaveRecallBot}
+                  disabled={isLoading}
+                >
+                  Disconnect Bot
+                </button>
+              </div>
+            )}
+
             {/* Meet URL input */}
             <div className="form-group">
-              <label className="form-label">Google Meet Link or Demo Link</label>
+              <label className="form-label">
+                Meeting Room URL (Google Meet, Zoom, or Microsoft Teams)
+              </label>
               <div className="meet-url-input-row">
                 <input
                   type="text"
                   className="form-input meet-input"
-                  placeholder="https://meet.google.com/abc-defg-hij"
+                  placeholder="https://meet.google.com/xyz or https://zoom.us/j/123"
                   value={meetUrl}
                   onChange={(e) => setMeetUrl(e.target.value)}
                   disabled={isLoading}
@@ -224,8 +334,9 @@ export const MeetingSchedulerModal: React.FC<MeetingSchedulerModalProps> = ({
                   className="secondary-btn instant-link-btn"
                   onClick={handleGenerateLink}
                   disabled={isLoading}
+                  title="Generate a fresh Google Meet link via Google Calendar"
                 >
-                  ⚡ Generate Meet Link
+                  ⚡ Provision Google Meet
                 </button>
               </div>
               {providerNotice && (
@@ -276,7 +387,7 @@ export const MeetingSchedulerModal: React.FC<MeetingSchedulerModalProps> = ({
               <div className="context-card-top">
                 <div className="context-card-title">
                   <span className="context-card-icon">📄</span>
-                  <strong>Ground-Truth Context:</strong>
+                  <strong>Ground-Truth Dossier:</strong>
                   {activeContext ? (
                     <span className="context-active-name">{activeContext.title} ({activeContext.numeric_metrics.length} metrics)</span>
                   ) : (
@@ -294,11 +405,40 @@ export const MeetingSchedulerModal: React.FC<MeetingSchedulerModalProps> = ({
               </div>
               {activeContext ? (
                 <div className="context-fact-preview">
-                  Miles will cross-examine you against exact numbers: {activeContext.numeric_metrics.slice(0, 3).map(m => `${m.name}: ${m.raw_value}`).join(' • ')}...
+                  Miles bot will cross-examine you against exact metrics: {activeContext.numeric_metrics.slice(0, 3).map(m => `${m.name}: ${m.raw_value}`).join(' • ')}...
                 </div>
               ) : (
                 <div className="context-empty-hint">
-                  Attach a deck or CV so Miles can check your numbers during the meeting.
+                  Attach a deck or Google Doc so the bot can audit your numbers during the call.
+                </div>
+              )}
+            </div>
+
+            {/* Scheduling Toggle */}
+            <div className="schedule-toggle-section">
+              <label className="schedule-toggle-label">
+                <input
+                  type="checkbox"
+                  checked={isScheduleMode}
+                  onChange={(e) => setIsScheduleMode(e.target.checked)}
+                  disabled={isLoading}
+                />
+                <span>Schedule bot for a future date/time</span>
+              </label>
+
+              {isScheduleMode && (
+                <div className="schedule-input-box">
+                  <label className="form-label">Target Join Time (Must be &gt;10 min in advance)</label>
+                  <input
+                    type="datetime-local"
+                    className="form-input"
+                    value={scheduledJoinAt}
+                    onChange={(e) => setScheduledJoinAt(e.target.value)}
+                    disabled={isLoading}
+                  />
+                  <span className="schedule-hint">
+                    Recall.ai guarantees on-time machine warm-up when scheduled &gt;10 minutes ahead.
+                  </span>
                 </div>
               )}
             </div>
@@ -340,20 +480,20 @@ export const MeetingSchedulerModal: React.FC<MeetingSchedulerModalProps> = ({
                 onClick={onClose}
                 disabled={isLoading}
               >
-                Cancel
+                Close
               </button>
               <button
                 type="button"
                 className="primary-btn launch-meet-btn"
-                onClick={handleScheduleAndStart}
+                onClick={handleLaunchRecallBot}
                 disabled={isLoading}
               >
                 {isLoading ? (
                   <>
-                    <span className="spinner-sm"></span> Starting Simulation...
+                    <span className="spinner-sm"></span> Dispatching Cloud Bot...
                   </>
                 ) : (
-                  <>🚀 Start Local Simulation</>
+                  <>🤖 {isScheduleMode ? 'Schedule Recall Bot' : 'Launch Recall Bot Now'}</>
                 )}
               </button>
             </div>
@@ -363,13 +503,13 @@ export const MeetingSchedulerModal: React.FC<MeetingSchedulerModalProps> = ({
             {meetings.length === 0 ? (
               <div className="empty-history-state">
                 <span className="empty-history-icon">📅</span>
-                <p>No meeting simulations yet.</p>
+                <p>No meeting sessions or bot records yet.</p>
                 <button
                   type="button"
                   className="secondary-btn"
-                  onClick={() => setActiveTab('schedule')}
+                  onClick={() => setActiveTab('launch')}
                 >
-                  Schedule Your First Simulation
+                  Launch Your First Meeting Bot
                 </button>
               </div>
             ) : (
@@ -395,6 +535,9 @@ export const MeetingSchedulerModal: React.FC<MeetingSchedulerModalProps> = ({
                     </div>
 
                     <div className="meeting-card-meta">
+                      {m.recall_bot_id && (
+                        <span className="meta-item recall-bot-tag">🤖 Recall: {m.recall_bot_id.slice(0, 8)}...</span>
+                      )}
                       {m.provider_mode && (
                         <span className="meta-item">Mode: {m.provider_mode.replace('_', ' ')}</span>
                       )}
@@ -415,7 +558,7 @@ export const MeetingSchedulerModal: React.FC<MeetingSchedulerModalProps> = ({
                           onClick={() => handleStopMeeting(m.meeting_id)}
                           disabled={actionLoadingId === m.meeting_id}
                         >
-                          {actionLoadingId === m.meeting_id ? 'Concluding...' : 'End Simulation & Generate Debrief'}
+                          {actionLoadingId === m.meeting_id ? 'Concluding...' : 'End Call & Generate Debrief'}
                         </button>
                       )}
 
@@ -437,10 +580,10 @@ export const MeetingSchedulerModal: React.FC<MeetingSchedulerModalProps> = ({
                           onClick={() => {
                             setMeetUrl(m.meet_url);
                             setPersonaId(m.persona_id);
-                            setActiveTab('schedule');
+                            setActiveTab('launch');
                           }}
                         >
-                          Start Simulation
+                          Launch Bot
                         </button>
                       )}
                     </div>
