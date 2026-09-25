@@ -459,14 +459,14 @@ export const DebriefModal: React.FC<DebriefModalProps> = ({
                   <div className="section-card-header">
                     <div className="section-title-wrap">
                       <Calculator size={16} className="text-amber-400" />
-                      <h3>Forensic Math & Contradiction Trap Detector</h3>
+                      <h3>Numbers & Contradiction Check</h3>
                     </div>
                     <span className="section-count-badge audit-badge-warn">
-                      {report.math_audit.discrepancies.length} Arithmetic Trap{report.math_audit.discrepancies.length > 1 ? "s" : ""} Caught
+                      {report.math_audit.discrepancies.length} Math Discrepanc{report.math_audit.discrepancies.length > 1 ? "ies" : "y"} Caught
                     </span>
                   </div>
                   <p className="math-audit-description">
-                    Our asynchronous claim validator monitored your quantitative figures across all debate rounds against relational unit economics (ARR vs Customers × ACV, Runway vs Cash / Monthly Burn, and Intra-Session Number Shifts).
+                    Miles checked your numbers during the session against basic unit economics (like ARR vs. customer count, runway vs. monthly burn, and whether your figures shifted midway through).
                   </p>
                   <div className="audit-items-list">
                     {report.math_audit.discrepancies.map((m, idx) => (
@@ -480,7 +480,7 @@ export const DebriefModal: React.FC<DebriefModalProps> = ({
                         <p className="audit-item-note">{m.description}</p>
                         {m.lethal_salvo && (
                           <div className="audit-rectification-salvo">
-                            <strong>Adversary Lethal Trap:</strong> "{m.lethal_salvo}"
+                            <strong>Opponent's Pushback:</strong> "{m.lethal_salvo}"
                           </div>
                         )}
                       </div>
@@ -495,10 +495,10 @@ export const DebriefModal: React.FC<DebriefModalProps> = ({
                   <div className="section-card-header">
                     <div className="section-title-wrap">
                       <FileCheck size={16} className="text-emerald-500" />
-                      <h3>Ground-Truth & Numeric Audit</h3>
+                      <h3>Fact Check & Document Audit</h3>
                     </div>
                     <span className={`section-count-badge ${report.ground_truth_audit.discrepancy_count > 0 ? "audit-badge-warn" : "audit-badge-good"}`}>
-                      {report.ground_truth_audit.factual_accuracy_score}% Factual Accuracy ({report.ground_truth_audit.verified_count} Verified / {report.ground_truth_audit.discrepancy_count} Blunder{report.ground_truth_audit.discrepancy_count !== 1 ? "s" : ""})
+                      {report.ground_truth_audit.factual_accuracy_score}% Factual Accuracy ({report.ground_truth_audit.verified_count} Verified / {report.ground_truth_audit.discrepancy_count} Slip-up{report.ground_truth_audit.discrepancy_count !== 1 ? "s" : ""})
                     </span>
                   </div>
 
@@ -526,7 +526,7 @@ export const DebriefModal: React.FC<DebriefModalProps> = ({
                             <p className="audit-item-note">{d.discrepancy_note}</p>
                             {d.rectification_salvo && (
                               <div className="audit-rectification-salvo">
-                                <strong>Adversary Rectification:</strong> "{d.rectification_salvo}"
+                                <strong>What They Called Out:</strong> "{d.rectification_salvo}"
                               </div>
                             )}
                           </div>
@@ -577,9 +577,9 @@ export const DebriefModal: React.FC<DebriefModalProps> = ({
                   <div className="tape-contrast-banner">
                     <Headphones size={16} className="tape-banner-icon" />
                     <div className="tape-banner-content">
-                      <strong>Audio Contrast: Listen to the Tape</strong>
+                      <strong>Audio Comparison: Listen to the Tape</strong>
                       <p>
-                        Audibly compare your actual microphone delivery against the adversary's commanding executive delivery. Click below to hear the visceral difference in pacing, filler usage, and inflection.
+                        Compare how you sounded against a sharper, more confident delivery. Hear the difference in pacing, filler words, and vocal delivery.
                       </p>
                     </div>
                   </div>
@@ -677,7 +677,7 @@ export const DebriefModal: React.FC<DebriefModalProps> = ({
                                   type="button"
                                   className="rematch-reframe-btn"
                                   onClick={() => handleStartReframeRematch(rf, idx)}
-                                  title="Step into the ring for a 30-second rapid retry of this reframe"
+                                  title="Try a 30-second rapid retry with this reframe"
                                 >
                                   <Flame size={12} className="text-amber-500" />
                                   <span>Re-spar</span>

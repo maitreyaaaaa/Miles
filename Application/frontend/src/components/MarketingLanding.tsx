@@ -115,7 +115,7 @@ export const MarketingLanding: React.FC<MarketingLandingProps> = ({
         <div className="hero-top-corners">
           <div className="hero-corner-item hero-corner-tl">
             <ShinyText text="STOP WINGING IT" speed={5} />
-            <span>LOCK IN FIRST</span>
+            <span>GET READY FIRST</span>
           </div>
           <div className="hero-corner-item hero-corner-tr">
             <span>PRACTICE OUT LOUD</span>
@@ -129,7 +129,7 @@ export const MarketingLanding: React.FC<MarketingLandingProps> = ({
           <div className="annotation-content">
             <span>SPEAK</span>
             <span>THINK</span>
-            <span>LOCK IN</span>
+            <span>FOCUS</span>
             <span>REPEAT.</span>
           </div>
         </aside>
@@ -165,7 +165,7 @@ export const MarketingLanding: React.FC<MarketingLandingProps> = ({
 
           {/* DYNAMIC ROTATING HOOK BADGE */}
           <div className="hero-dynamic-pill">
-            <span className="hero-pill-prefix">Do not get cooked in a</span>
+            <span className="hero-pill-prefix">Don't freeze up in a</span>
             <span className="hero-rotating-word" key={roleIndex}>
               {rotatingRoles[roleIndex]}
             </span>
@@ -198,7 +198,7 @@ export const MarketingLanding: React.FC<MarketingLandingProps> = ({
           {/* CUSTOM TOPIC CAPSULE */}
           <div className="hero-topic-maker">
             <label htmlFor="hero-custom-topic-input" className="hero-topic-label">
-              Make your own topic. Be so for real.
+              Make your own topic. Keep it real.
             </label>
             <form className="hero-topic-capsule" onSubmit={handleCustomTopicSubmit}>
               <input
@@ -308,7 +308,7 @@ export const MarketingLanding: React.FC<MarketingLandingProps> = ({
             Most people practice the big conversation in their head and call it prep.
           </h2>
           <p className="section-lead">
-            Then the real person asks one hard question and suddenly the brain tabs are all crashing.
+            Then the other person asks one tough question and suddenly your train of thought completely derails.
             Miles lets you feel that pressure before it matters.
           </p>
 
@@ -320,13 +320,13 @@ export const MarketingLanding: React.FC<MarketingLandingProps> = ({
               </div>
               <ul className="contrast-list">
                 <li>
-                  <strong>It keeps glazing you:</strong> "Great point" this, "nice idea" that. Bestie, that is not practice.
+                  <strong>It just flatters you:</strong> "Great point" this, "nice idea" that. But flattery is not real practice.
                 </li>
                 <li>
-                  <strong>It lets you ramble:</strong> You can yap for two minutes and nothing bad happens.
+                  <strong>It lets you ramble:</strong> You can talk in circles for two minutes and nothing stops you.
                 </li>
                 <li>
-                  <strong>No pressure:</strong> You feel safe, then the real meeting humbles you instantly.
+                  <strong>No pressure:</strong> You feel comfortable, until the real meeting catches you off guard.
                 </li>
                 <li>
                   <strong>It cannot hear you:</strong> It misses your pauses, filler words, and panic speed.
@@ -337,11 +337,11 @@ export const MarketingLanding: React.FC<MarketingLandingProps> = ({
             <div className="contrast-card contrast-miles reveal-on-scroll">
               <div className="contrast-card-header">
                 <span className="contrast-pill miles-pill">Miles</span>
-                <span className="contrast-status status-active">Locked in</span>
+                <span className="contrast-status status-active">Dialed in</span>
               </div>
               <ul className="contrast-list">
                 <li>
-                  <strong>No fake hype:</strong> Miles pushes back when your answer is weak.
+                  <strong>No sugarcoating:</strong> Miles pushes back when your answer is weak.
                 </li>
                 <li>
                   <strong>It cuts in:</strong> If you dodge, stall, or waffle, Miles calls it out.
@@ -444,9 +444,9 @@ export const MarketingLanding: React.FC<MarketingLandingProps> = ({
             <SpotlightCard className="bento-card reveal-on-scroll" spotlightColor="rgba(198, 244, 50, 0.12)">
               <div className="bento-card-icon-box">
                 <Target size={22} className="bento-icon" />
-                <span className="bento-tech-tag">No glazing</span>
+                <span className="bento-tech-tag">No sugarcoating</span>
               </div>
-              <h3 className="bento-card-title">It will not pretend your answer ate</h3>
+              <h3 className="bento-card-title">It won't pretend a weak answer worked</h3>
               <p className="bento-card-desc">
                 If your point is weak, Miles says so. Not to be mean.
                 To help you fix it before someone important says it worse.
@@ -462,9 +462,9 @@ export const MarketingLanding: React.FC<MarketingLandingProps> = ({
             <SpotlightCard className="bento-card reveal-on-scroll" spotlightColor="rgba(198, 244, 50, 0.12)">
               <div className="bento-card-icon-box">
                 <FileText size={22} className="bento-icon" />
-                <span className="bento-tech-tag">Bring receipts</span>
+                <span className="bento-tech-tag">Use your real data</span>
               </div>
-              <h3 className="bento-card-title">Upload your deck and get cooked safely</h3>
+              <h3 className="bento-card-title">Upload your deck and test it under real pressure</h3>
               <p className="bento-card-desc">
                 Add a pitch deck, contract, or notes. Miles uses your own words and numbers
                 to ask better questions. Painful, but useful.
@@ -525,7 +525,7 @@ export const MarketingLanding: React.FC<MarketingLandingProps> = ({
           </div>
 
           <h2 className="section-headline">
-            Four steps. No 40-minute setup arc.
+            Four steps. No complicated setup.
           </h2>
           <p className="section-lead">
             This is not another chat box. You talk out loud, get challenged,
@@ -538,7 +538,7 @@ export const MarketingLanding: React.FC<MarketingLandingProps> = ({
               <div className="step-header">Pick the room</div>
               <p className="step-desc">
                 Choose a pitch, salary talk, interview, board meeting, legal question,
-                or write your own spicy topic.
+                or write your own custom challenge.
               </p>
             </div>
 
@@ -578,7 +578,7 @@ export const MarketingLanding: React.FC<MarketingLandingProps> = ({
         <div className="section-container">
           <div className="section-index-badge">
             <span className="badge-dot" />
-            <span>/ 04 — TRY THE VIBE</span>
+            <span>/ 04 — HEAR A PREVIEW</span>
           </div>
 
           <h2 className="section-headline">
@@ -637,7 +637,7 @@ export const MarketingLanding: React.FC<MarketingLandingProps> = ({
                 </div>
                 <div className="sample-meta">
                   <span className="sample-name">Elena Rostova</span>
-                  <span className="sample-role">Hiring lead who will not overpay for vibes</span>
+                  <span className="sample-role">Hiring lead who demands real results, not hype</span>
                 </div>
                 <button
                   type="button"

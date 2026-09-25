@@ -3802,6 +3802,63 @@ p {
   cursor: not-allowed;
 }
 
+/* Google Drive Mode */
+.context-drive-container {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.drive-header-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 18px;
+  background: #f0f9ff;
+  border: 1px solid #bae6fd;
+  border-radius: 12px;
+}
+
+.drive-header-card h4 {
+  margin: 0 0 2px 0;
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: #0369a1;
+}
+
+.drive-header-card p {
+  margin: 0;
+  font-size: 0.8rem;
+  color: #0c4a6e;
+}
+
+.drive-icon-pill {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  background: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #e0f2fe;
+  flex-shrink: 0;
+}
+
+.drive-input-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.drive-input-row input {
+  flex: 1;
+}
+
+.drive-import-btn {
+  white-space: nowrap;
+  padding: 10px 18px;
+}
+
 /* Preview Fact-Sheet */
 .context-preview-container {
   display: flex;

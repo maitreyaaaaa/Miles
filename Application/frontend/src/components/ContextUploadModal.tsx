@@ -13,8 +13,10 @@ import {
   ShieldAlert,
   Loader2,
   FileCheck,
+  Globe,
+  ExternalLink,
 } from "lucide-react";
-import type { ContextDossier, NumericMetric } from "../types";
+import type { ContextDossier } from "../types";
 
 interface ContextUploadModalProps {
   isOpen: boolean;
@@ -33,12 +35,15 @@ export const ContextUploadModal: React.FC<ContextUploadModalProps> = ({
   onClearContext,
   backendUrl,
 }) => {
-  const [tab, setTab] = useState<"upload" | "paste" | "preview">("upload");
+  const [tab, setTab] = useState<"upload" | "paste" | "gdrive" | "preview">("upload");
   const [dragOver, setDragOver] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [pastedText, setPastedText] = useState("");
   const [pastedTitle, setPastedTitle] = useState("");
+  const [driveUrl, setDriveUrl] = useState("");
+  const [googleAccessToken, setGoogleAccessToken] = useState("");
+  const [googleConfig, setGoogleConfig] = useState<{ client_id?: string; drive_enabled?: boolean } | null>(null);
   const [previewDossier, setPreviewDossier] = useState<ContextDossier | null>(activeContext);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -47,6 +52,15 @@ export const ContextUploadModal: React.FC<ContextUploadModalProps> = ({
       setPreviewDossier(activeContext);
     }
   }, [activeContext]);
+
+  useEffect(() => {
+    if (isOpen) {
+      fetch(`${backendUrl}/api/auth/google/config`)
+        .then((res) => res.json())
+        .then((data) => setGoogleConfig(data))
+        .catch(() => setGoogleConfig(null));
+    }
+  }, [isOpen, backendUrl]);
 
   if (!isOpen) return null;
 
@@ -109,6 +123,38 @@ export const ContextUploadModal: React.FC<ContextUploadModalProps> = ({
     }
   };
 
+  const handleDriveImport = async () => {
+    if (!driveUrl.trim()) {
+      setErrorMsg("Please enter a Google Drive, Docs, Sheets, or Slides link or file ID.");
+      return;
+    }
+    setIsLoading(true);
+    setErrorMsg(null);
+    try {
+      const resp = await fetch(`${backendUrl}/api/context/google-drive/import`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          url_or_id: driveUrl.trim(),
+          access_token: googleAccessToken.trim() || undefined,
+        }),
+      });
+
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({ detail: "Drive import failed" }));
+        throw new Error(err.detail || `Google Drive import failed with HTTP ${resp.status}`);
+      }
+
+      const dossier: ContextDossier = await resp.json();
+      setPreviewDossier(dossier);
+      setTab("preview");
+    } catch (err: any) {
+      setErrorMsg(err.message || "Failed to import from Google Drive");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setDragOver(false);
@@ -139,9 +185,9 @@ export const ContextUploadModal: React.FC<ContextUploadModalProps> = ({
               <FileCheck size={18} />
             </div>
             <div>
-              <h3>Ground-Truth Context & Cross-Exam Dossier</h3>
+              <h3>Add Your Pitch Deck, CV, or Notes</h3>
               <p>
-                Upload your CV, Pitch Deck, or Specs. Miles will extract exact numbers and cross-examine you on them.
+                Upload or connect your document. Miles will pull out your key numbers and challenge you on them.
               </p>
             </div>
           </div>
@@ -167,6 +213,14 @@ export const ContextUploadModal: React.FC<ContextUploadModalProps> = ({
           >
             <Clipboard size={14} />
             <span>Paste Text / Notes</span>
+          </button>
+          <button
+            type="button"
+            className={`context-tab ${tab === "gdrive" ? "active" : ""}`}
+            onClick={() => setTab("gdrive")}
+          >
+            <Globe size={14} />
+            <span>Google Drive</span>
           </button>
           {previewDossier && (
             <button
@@ -279,6 +333,60 @@ Churn is 1.8% monthly."
                 <span>Extract Metrics & Traps</span>
                 <ArrowRight size={14} />
               </button>
+            </div>
+          ) : tab === "gdrive" ? (
+            <div className="context-drive-container">
+              <div className="drive-header-card">
+                <div className="drive-icon-pill">
+                  <Globe size={24} style={{ color: "#0284c7" }} />
+                </div>
+                <div>
+                  <h4>Import from Google Drive</h4>
+                  <p>Paste any Google Doc, Sheet, Slide, or shared Drive file to extract numbers and traps.</p>
+                </div>
+              </div>
+
+              <div className="paste-field-group">
+                <label htmlFor="context-drive-url">Google Drive, Doc, or Sheet Link</label>
+                <div className="drive-input-row">
+                  <input
+                    id="context-drive-url"
+                    type="text"
+                    placeholder="https://docs.google.com/document/d/... or https://drive.google.com/file/d/..."
+                    value={driveUrl}
+                    onChange={(e) => setDriveUrl(e.target.value)}
+                    disabled={isLoading}
+                  />
+                  <button
+                    type="button"
+                    className="paste-analyze-btn drive-import-btn"
+                    onClick={handleDriveImport}
+                    disabled={isLoading || !driveUrl.trim()}
+                  >
+                    <span>Import & Audit</span>
+                    <ArrowRight size={14} />
+                  </button>
+                </div>
+              </div>
+
+              {googleConfig && !googleConfig.drive_enabled && (
+                <div style={{ padding: "10px 14px", background: "#fef3c7", border: "1px solid #fde68a", borderRadius: "8px", fontSize: "0.82rem", color: "#92400e" }}>
+                  💡 <strong>Public Link Mode:</strong> You can paste any publicly shared Google Doc or Sheet link ("Anyone with the link can view") immediately. To access private files, add your <code>GOOGLE_CLIENT_ID</code> and <code>GOOGLE_CLIENT_SECRET</code> to <code>.env</code>.
+                </div>
+              )}
+
+              <div className="context-tips-box">
+                <div className="tips-header">
+                  <ShieldAlert size={14} />
+                  <span>Supported Google Drive Formats</span>
+                </div>
+                <ul>
+                  <li><strong>Google Docs:</strong> Automatically converted to clean text for forensic ground-truth extraction.</li>
+                  <li><strong>Google Sheets:</strong> Parsed as tabular CSV data to verify revenue, CAC, unit economics, and margins.</li>
+                  <li><strong>Google Slides:</strong> Extracted slide-by-slide to test your presentation claims under pressure.</li>
+                  <li><strong>Sharing:</strong> Set link sharing to <em>"Anyone with the link can view"</em> for instant import.</li>
+                </ul>
+              </div>
             </div>
           ) : previewDossier ? (
             <div className="context-preview-container">

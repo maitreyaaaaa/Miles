@@ -24,6 +24,13 @@ from src.config import config
 from src.context.analyzer import analyze_context_document
 from src.context.extractor import extract_text_from_bytes
 from src.context.store import get_context_store
+from src.context.google_drive import (
+    GoogleDriveService,
+    extract_google_drive_file_id,
+    get_google_auth_url,
+    exchange_google_code_for_tokens,
+)
+from src.meeting.google_meet import GoogleMeetProvisioner
 from src.debate.engine import DebateEngine
 from src.debate.llm_client import LLMClient
 from src.debate.personas import (
@@ -185,6 +192,22 @@ class ScheduleMeetingRequest(BaseModel):
     max_duration_seconds: Optional[int] = 1800
 
 
+class GoogleDriveImportRequest(BaseModel):
+    url_or_id: str
+    access_token: Optional[str] = None
+    doc_type_hint: Optional[str] = None
+
+
+class GoogleDriveExportRequest(BaseModel):
+    access_token: str
+    filename: Optional[str] = "Miles_Debrief_Report.pdf"
+
+
+class GoogleAuthExchangeRequest(BaseModel):
+    code: str
+    redirect_uri: Optional[str] = None
+
+
 def calculate_pcm_rms(pcm_bytes: bytes) -> float:
     """Calculate Root Mean Square (RMS) energy of 16-bit PCM audio frame."""
     if len(pcm_bytes) < 2:
@@ -211,6 +234,9 @@ async def health_check():
             "stt": config.active_stt_provider,
             "tts": config.active_tts_provider,
             "llm": config.active_llm_provider,
+            "google_drive": config.google_drive_enabled,
+            "google_meet": config.google_calendar_enabled,
+            "recall_ai": config.recall_ai_enabled,
         },
         "config": {
             "sample_rate": config.sample_rate,
@@ -510,6 +536,123 @@ async def list_available_contexts():
     return {"contexts": store.list_contexts()}
 
 
+# ==========================================
+# Google Drive & Google OAuth Endpoints
+# ==========================================
+
+
+@app.get("/api/auth/google/config")
+async def get_google_auth_config():
+    """Return public Google OAuth and Picker client configuration."""
+    return {
+        "client_id": config.google_client_id,
+        "api_key": config.google_api_key,
+        "redirect_uri": config.google_redirect_uri,
+        "drive_enabled": config.google_drive_enabled,
+        "calendar_enabled": config.google_calendar_enabled,
+    }
+
+
+@app.get("/api/auth/google/url")
+async def get_google_authorization_url(redirect_uri: Optional[str] = Query(None)):
+    """Generate the Google OAuth consent URL for user login."""
+    if not config.google_client_id:
+        raise HTTPException(
+            status_code=400,
+            detail="GOOGLE_CLIENT_ID is not configured in .env. Please configure your Google Cloud OAuth Client ID.",
+        )
+    try:
+        url = get_google_auth_url(redirect_uri=redirect_uri)
+        return {"auth_url": url}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/auth/google/callback")
+async def handle_google_oauth_callback(req: GoogleAuthExchangeRequest):
+    """Exchange authorization code for Google access and refresh tokens."""
+    try:
+        tokens = await exchange_google_code_for_tokens(
+            code=req.code,
+            redirect_uri=req.redirect_uri,
+        )
+        return tokens
+    except Exception as e:
+        logger.error(f"[GoogleOAuth] Token exchange error: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/context/google-drive/import")
+async def import_from_google_drive(req: GoogleDriveImportRequest):
+    """Fetch, extract, and analyze a document directly from Google Drive, Docs, Sheets, or Slides."""
+    file_id = extract_google_drive_file_id(req.url_or_id)
+    if not file_id:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid Google Drive link or file ID. Provide a valid Google Docs/Drive URL or ID.",
+        )
+
+    try:
+        drive_service = GoogleDriveService(access_token=req.access_token)
+        fetched = await drive_service.fetch_document(file_id)
+
+        filename = fetched["filename"]
+        file_bytes = fetched["file_bytes"]
+
+        if not file_bytes:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Google Drive file '{filename}' was empty or inaccessible.",
+            )
+
+        extracted = extract_text_from_bytes(file_bytes, filename)
+        text = extracted.get("text", "")
+        if not text.strip():
+            raise HTTPException(
+                status_code=400,
+                detail=f"Could not extract readable text from Google Drive document '{filename}'.",
+            )
+
+        dossier = await analyze_context_document(text, filename, req.doc_type_hint)
+        store = get_context_store()
+        store.save_context(dossier)
+        return dossier.to_dict()
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[GoogleDrive] Error importing file {file_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/debrief/{session_id}/export-drive")
+async def export_debrief_to_google_drive(session_id: str, req: GoogleDriveExportRequest):
+    """Export the finalized debrief report as an Executive PDF directly to Google Drive."""
+    report = None
+    engine = SESSIONS.get(session_id)
+    if engine:
+        report = engine.get_debrief_report()
+
+    if not report:
+        debrief_store = get_debrief_store()
+        saved = debrief_store.get_debrief(session_id)
+        if saved:
+            report = saved.get("report")
+
+    if not report:
+        raise HTTPException(status_code=404, detail="Debrief report not found for this session.")
+
+    try:
+        pdf_bytes = generate_executive_pdf(report)
+        filename = req.filename or f"Miles_Debrief_{session_id[:8]}.pdf"
+        drive_service = GoogleDriveService(access_token=req.access_token)
+        result = await drive_service.export_debrief_pdf(pdf_bytes, filename=filename)
+        return result
+    except Exception as e:
+        logger.error(f"[GoogleDrive] Error uploading debrief to Drive: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/session/{session_id}/report")
 async def get_session_report(session_id: str):
     """Retrieve the post-debate debrief report for a completed session."""
@@ -581,18 +724,17 @@ async def stop_google_meet_session(meeting_id: str):
 
 
 @app.get("/api/meeting/generate-link")
-async def generate_instant_link():
-    """Generate a Meet-shaped local demo link.
-
-    This does not provision a real Google Meet room. It exists for local scheduling
-    simulations until an external calendar/Meet provider is connected.
-    """
+async def generate_instant_link(access_token: Optional[str] = Query(None)):
+    """Generate a real Google Meet room (via Google Calendar) or fall back cleanly to a local simulation link."""
     scheduler = get_meeting_scheduler()
+    provisioner = GoogleMeetProvisioner(access_token=access_token)
+    res = await provisioner.create_meeting_room()
     return {
-        "meet_url": generate_meet_code(),
-        "provisioned": False,
+        "meet_url": res["meet_url"],
+        "provisioned": res.get("is_real_meet", False),
+        "event_id": res.get("event_id"),
         "provider_mode": scheduler.bot_provider.provider_mode,
-        "provider_notice": scheduler.bot_provider.provider_notice,
+        "provider_notice": res.get("provider_notice") or scheduler.bot_provider.provider_notice,
     }
 
 

@@ -353,7 +353,7 @@ export const RematchModal: React.FC<RematchModalProps> = ({
             <div className="rematch-stage-box salvo">
               <div className="salvo-adversary-card">
                 <div className="salvo-card-top">
-                  <span className="salvo-badge">The Brutal Trap Re-thrown</span>
+                  <span className="salvo-badge">The Challenge Re-tested</span>
                   <button
                     type="button"
                     className={`salvo-audio-replay-btn ${isAdversaryPlaying ? "active-playing" : ""}`}
@@ -400,7 +400,7 @@ export const RematchModal: React.FC<RematchModalProps> = ({
                   className="rematch-enter-ring-btn"
                   onClick={startUserRetryStage}
                 >
-                  <span>Step into the Ring (Start 30s Clock)</span>
+                  <span>Try Again (Start 30s Clock)</span>
                   <ArrowRight size={16} />
                 </button>
               </div>

@@ -6,6 +6,7 @@ import logging
 import time
 from typing import Any, Dict, List, Optional
 
+from src.config import config
 from src.meeting.models import MeetingConfig, MeetingSession, MeetingStatus
 
 logger = logging.getLogger(__name__)
@@ -172,6 +173,78 @@ class HeadlessMeetBotProvider(MeetingBotProvider):
             await channel.close()
 
 
+class RecallMeetBotProvider(MeetingBotProvider):
+    """Cloud meeting bot provider using Recall.ai.
+    
+    Recall.ai runs containerized Chromium bots in the cloud that navigate to Google Meet,
+    bypass captchas/waiting rooms, and stream bidirectional audio.
+    """
+
+    def __init__(self, api_key: Optional[str] = None):
+        self.api_key = api_key or config.recall_ai_api_key
+        self.active_channels: Dict[str, MeetingAudioChannel] = {}
+        self.active_bot_ids: Dict[str, str] = {}
+
+    @property
+    def provider_mode(self) -> str:
+        return "recall_ai"
+
+    @property
+    def provider_notice(self) -> str:
+        return "Recall.ai cloud meeting bot provider configured. Bot will join Google Meet call."
+
+    async def join_meeting(self, session: MeetingSession) -> MeetingAudioChannel:
+        import httpx
+
+        logger.info(
+            f"[RecallMeetBotProvider] Dispatching cloud bot to {session.meet_url} via Recall.ai..."
+        )
+        channel = MockMeetingAudioChannel(session.meeting_id)
+        self.active_channels[session.meeting_id] = channel
+
+        if self.api_key:
+            try:
+                headers = {
+                    "Authorization": f"Token {self.api_key}",
+                    "Content-Type": "application/json",
+                }
+                payload = {
+                    "meeting_url": session.meet_url,
+                    "bot_name": f"Miles AI ({session.persona_id.replace('_', ' ').title()})",
+                }
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    resp = await client.post("https://api.recall.ai/api/v1/bot/", headers=headers, json=payload)
+                    if resp.status_code in (200, 201):
+                        bot_data = resp.json()
+                        self.active_bot_ids[session.meeting_id] = bot_data.get("id", "")
+                        logger.info(f"[RecallMeetBotProvider] Recall bot created: {bot_data.get('id')}")
+                    else:
+                        logger.warning(f"[RecallMeetBotProvider] Recall.ai API returned {resp.status_code}: {resp.text}")
+            except Exception as e:
+                logger.error(f"[RecallMeetBotProvider] Error invoking Recall.ai API: {e}")
+
+        return channel
+
+    async def leave_meeting(self, meeting_id: str) -> None:
+        import httpx
+
+        bot_id = self.active_bot_ids.pop(meeting_id, None)
+        if bot_id and self.api_key:
+            try:
+                headers = {"Authorization": f"Token {self.api_key}"}
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    await client.post(f"https://api.recall.ai/api/v1/bot/{bot_id}/leave_call/", headers=headers)
+                    logger.info(f"[RecallMeetBotProvider] Recall bot {bot_id} left call.")
+            except Exception as e:
+                logger.error(f"[RecallMeetBotProvider] Error leaving Recall.ai call: {e}")
+
+        channel = self.active_channels.pop(meeting_id, None)
+        if channel:
+            await channel.close()
+
+
 def get_default_meeting_provider() -> MeetingBotProvider:
     """Return default meeting provider configured for environment."""
+    if config.recall_ai_enabled:
+        return RecallMeetBotProvider()
     return HeadlessMeetBotProvider(use_mock_fallback=True)

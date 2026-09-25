@@ -48,7 +48,7 @@ const scenarios: { id: ScenarioId; label: string; opponent: string; topic: strin
     id: "hostile_cross_exam",
     label: "Cross-Examination",
     opponent: "DA Carter",
-    topic: "Survive a courtroom-style attack on your consistency.",
+    topic: "Handle sharp, aggressive questions without contradicting yourself.",
     tag: "Legal",
   },
   {
@@ -83,7 +83,7 @@ const scenarios: { id: ScenarioId; label: string; opponent: string; topic: strin
     id: "custom_debate",
     label: "Custom Topic",
     opponent: "The Contrarian",
-    topic: "Write any position and argue it under relentless counter-pressure.",
+    topic: "Pick any stance and defend it under real counter-pressure.",
     tag: "Freeform",
   },
 ];
@@ -98,14 +98,14 @@ const personaTones: { id: PersonaTone; label: string; desc: string }[] = [
 
 const difficulties: Difficulty[] = ["easy", "medium", "hard", "ruthless"];
 const thinkingWords = [
-  "apophenia",
-  "palimpsest",
-  "susurrus",
-  "liminality",
-  "aporia",
-  "numinous",
-  "sonder",
-  "quincunx",
+  "stress-testing claims",
+  "spotting weak points",
+  "framing counter-arguments",
+  "checking your numbers",
+  "mapping objections",
+  "sharpening pushbacks",
+  "testing edge cases",
+  "setting traps",
 ];
 
 type TopicPrep =
@@ -655,7 +655,7 @@ function App() {
             {/* Topic Maker Input Capsule */}
             <div className="hero-topic-maker" style={{ margin: "0 auto 16px" }}>
               <label htmlFor="custom-topic" className="hero-topic-label">
-                Argue your own thesis
+                Argue your own topic
               </label>
               <form
                 className="hero-topic-capsule"
@@ -689,7 +689,7 @@ function App() {
                 <div className={`topic-prep ${topicPrep.status}`}>
                   {topicPrep.status === "thinking" && (
                     <div className="topic-prep-thinking-box">
-                      <span className="animate-pulse">Cognitive calibration:</span>
+                      <span className="animate-pulse">Getting ready:</span>
                       <strong>{topicPrep.word}</strong>
                     </div>
                   )}
@@ -704,10 +704,10 @@ function App() {
             </div>
 
             <div className="section-divider-badge-wrapper">
-              <span className="section-eyebrow-badge">SPARRING ARCHETYPES</span>
+              <span className="section-eyebrow-badge">PRACTICE SCENARIOS</span>
               <h2 className="section-heading-clean">Select your opponent</h2>
               <p className="section-subheading-clean">
-                Explore specialized scenarios or adjust tactical aggression and difficulty.
+                Pick a scenario below or adjust the pressure and difficulty.
               </p>
             </div>
 

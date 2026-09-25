@@ -22,6 +22,19 @@ class AppConfig:
     gemini_api_key: str = os.getenv("GEMINI_API_KEY", "")
     anthropic_api_key: str = os.getenv("ANTHROPIC_API_KEY", "")
 
+    # Google Cloud & Google Drive / Calendar Settings
+    google_client_id: str = os.getenv("GOOGLE_CLIENT_ID", "")
+    google_client_secret: str = os.getenv("GOOGLE_CLIENT_SECRET", "")
+    google_api_key: str = os.getenv("GOOGLE_API_KEY", "")
+    google_redirect_uri: str = os.getenv("GOOGLE_REDIRECT_URI", "http://localhost:5173")
+    google_refresh_token: str = os.getenv("GOOGLE_REFRESH_TOKEN", "")
+
+    # Meeting Bot Provider (Recall.ai for cloud bot or local headless browser)
+    recall_ai_api_key: str = os.getenv("RECALL_AI_API_KEY", "")
+
+    # Notification / Email Settings
+    resend_api_key: str = os.getenv("RESEND_API_KEY", "")
+
     # Server settings
     host: str = os.getenv("HOST", "0.0.0.0")
     port: int = int(os.getenv("PORT", "8000"))
@@ -55,6 +68,18 @@ class AppConfig:
     @property
     def active_stt_provider(self) -> str:
         return "AssemblyAI v3" if self.assemblyai_api_key else "Simulation Fallback"
+
+    @property
+    def google_drive_enabled(self) -> bool:
+        return bool(self.google_client_id or self.google_api_key or self.google_refresh_token)
+
+    @property
+    def google_calendar_enabled(self) -> bool:
+        return bool(self.google_client_id and self.google_client_secret)
+
+    @property
+    def recall_ai_enabled(self) -> bool:
+        return bool(self.recall_ai_api_key)
 
 
 config = AppConfig()

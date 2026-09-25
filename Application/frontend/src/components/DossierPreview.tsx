@@ -17,7 +17,7 @@ export const DossierPreview: React.FC<DossierPreviewProps> = ({ dossier, onStart
           <div className="dossier-badge-icon">
             <Swords size={16} />
           </div>
-          <span>5-Vector Battle Dossier</span>
+          <span>Prep Brief & Strategy Breakdown</span>
         </div>
         <span className="dossier-intensity-pill">
           Intensity: {dossier.difficulty_profile?.adversarial_intensity || 4}/5
@@ -28,7 +28,7 @@ export const DossierPreview: React.FC<DossierPreviewProps> = ({ dossier, onStart
       <div className="dossier-thesis-box">
         <div className="dossier-thesis-label">
           <ShieldAlert size={14} />
-          <span>Contrarian Thesis ({dossier.persona_name ? <DecryptedText text={dossier.persona_name} speed={30} maxIterations={8} animateOn="view" /> : "Adversary"})</span>
+          <span>Opposing Viewpoint ({dossier.persona_name ? <DecryptedText text={dossier.persona_name} speed={30} maxIterations={8} animateOn="view" /> : "Adversary"})</span>
         </div>
         <p className="dossier-thesis-text">
           "{dossier.contrarian_thesis}"
@@ -52,7 +52,7 @@ export const DossierPreview: React.FC<DossierPreviewProps> = ({ dossier, onStart
       {dossier.attack_vectors && dossier.attack_vectors.length > 0 && (
         <div className="dossier-section">
           <span className="dossier-section-title">
-            <Crosshair size={13} style={{ color: "#fb7185" }} /> Categorized Attack Vectors
+            <Crosshair size={13} style={{ color: "#fb7185" }} /> Key Angles & Pushbacks
           </span>
           <div className="dossier-vectors-list">
             {dossier.attack_vectors.map((vec, idx) => (
@@ -71,7 +71,7 @@ export const DossierPreview: React.FC<DossierPreviewProps> = ({ dossier, onStart
       {dossier.trap_questions && dossier.trap_questions.length > 0 && (
         <div className="dossier-section">
           <span className="dossier-section-title">
-            <HelpCircle size={13} style={{ color: "#fbbf24" }} /> Pre-Computed Trap Inquiries
+            <HelpCircle size={13} style={{ color: "#fbbf24" }} /> Likely Follow-up Traps
           </span>
           <div className="dossier-traps-list">
             {dossier.trap_questions.map((q, idx) => (
@@ -96,7 +96,7 @@ export const DossierPreview: React.FC<DossierPreviewProps> = ({ dossier, onStart
             onClick={onStart}
             className="dossier-start-btn"
           >
-            <span>Begin Sparring</span>
+            <span>Start Sparring</span>
             <ArrowRight size={14} />
           </button>
       </div>

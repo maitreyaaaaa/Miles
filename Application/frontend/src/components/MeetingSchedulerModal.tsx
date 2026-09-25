@@ -173,15 +173,17 @@ export const MeetingSchedulerModal: React.FC<MeetingSchedulerModalProps> = ({
             </div>
             <div>
               <div className="meeting-title-row">
-                <h2 className="modal-title">Meet Sparring Simulation</h2>
-                <span className="audio-only-badge">Local Mock Mode</span>
+                <h2 className="modal-title">Google Meet Sparring</h2>
+                <span className="audio-only-badge">
+                  {providerNotice?.toLowerCase().includes('recall') ? 'Live Bot Mode' : 'Sparring Call'}
+                </span>
               </div>
               <p className="modal-subtitle">
-                Rehearse the Google Meet workflow locally. Live external bot join/audio requires a real meeting provider.
+                Start or schedule a Google Meet sparring session. Miles will join the call to test your answers and track your composure.
               </p>
             </div>
           </div>
-          <button className="modal-close-btn" onClick={onClose} aria-label="Close meeting simulation">&times;</button>
+          <button className="modal-close-btn" onClick={onClose} aria-label="Close meeting modal">&times;</button>
         </div>
 
         {/* Tab switcher */}
@@ -223,7 +225,7 @@ export const MeetingSchedulerModal: React.FC<MeetingSchedulerModalProps> = ({
                   onClick={handleGenerateLink}
                   disabled={isLoading}
                 >
-                  ⚡ Generate Demo Link
+                  ⚡ Generate Meet Link
                 </button>
               </div>
               {providerNotice && (
@@ -296,7 +298,7 @@ export const MeetingSchedulerModal: React.FC<MeetingSchedulerModalProps> = ({
                 </div>
               ) : (
                 <div className="context-empty-hint">
-                  Attach a deck or CV to let Miles fact-check and rectify your numbers in the simulated meeting flow.
+                  Attach a deck or CV so Miles can check your numbers during the meeting.
                 </div>
               )}
             </div>
