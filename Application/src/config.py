@@ -17,6 +17,8 @@ def _clean_env(key: str, default: str = "") -> str:
     val = os.getenv(key, default)
     if val:
         val = val.strip().strip("'\"")
+        # Remove any internal newlines or carriage returns from copy-pasting
+        val = "".join(val.splitlines()).strip()
     return val or default
 
 
