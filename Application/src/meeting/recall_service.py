@@ -53,7 +53,7 @@ class RecallService:
         bot_name: str = "Miles AI Adversary",
         join_at: Optional[Union[str, datetime.datetime]] = None,
         metadata: Optional[Dict[str, Any]] = None,
-        transcription_provider: Optional[str] = "assemblyai",
+        transcription_provider: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Deploy an ad-hoc or scheduled meeting bot.
         
@@ -62,16 +62,11 @@ class RecallService:
             bot_name: Display name of the bot participant in the meeting.
             join_at: Optional ISO8601 string or datetime. If >10 mins in future, schedules a bot.
             metadata: Custom key-value pairs (e.g. session_id, context_id).
-            transcription_provider: Preferred transcription engine ('assemblyai' or default).
+            transcription_provider: Optional transcription provider. Omit to use Recall native transcription.
         """
         payload: Dict[str, Any] = {
             "meeting_url": meeting_url.strip(),
             "bot_name": bot_name.strip(),
-            "automatic_leave": {
-                "anyone_leaves": False,
-                "bot_alone": True,
-                "silence_detection": True,
-            },
         }
 
         if join_at:
@@ -87,7 +82,8 @@ class RecallService:
             payload["metadata"] = metadata
 
         if transcription_provider:
-            payload["transcription_options"] = {"provider": transcription_provider}
+            normalized_provider = "assembly_ai_v3" if transcription_provider == "assemblyai" else transcription_provider
+            payload["transcription_options"] = {"provider": normalized_provider}
 
         async with httpx.AsyncClient(timeout=20.0) as client:
             try:
