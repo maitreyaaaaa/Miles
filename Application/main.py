@@ -1,9 +1,16 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
-import uvicorn
+from pathlib import Path
 
+APP_DIR = Path(__file__).resolve().parent
+if str(APP_DIR) not in sys.path:
+    sys.path.insert(0, str(APP_DIR))
+os.chdir(APP_DIR)
+
+import uvicorn
 from src.config import config
 
 logging.basicConfig(
