@@ -13,26 +13,33 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 load_dotenv(APP_DIR / ".env")
 
 
+def _clean_env(key: str, default: str = "") -> str:
+    val = os.getenv(key, default)
+    if val:
+        val = val.strip().strip("'\"")
+    return val or default
+
+
 @dataclass(frozen=True)
 class AppConfig:
     # API Keys
-    assemblyai_api_key: str = os.getenv("ASSEMBLYAI_API_KEY", "")
-    rime_api_key: str = os.getenv("RIME_API_KEY", "")
-    openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
-    gemini_api_key: str = os.getenv("GEMINI_API_KEY", "")
-    anthropic_api_key: str = os.getenv("ANTHROPIC_API_KEY", "")
+    assemblyai_api_key: str = _clean_env("ASSEMBLYAI_API_KEY", "")
+    rime_api_key: str = _clean_env("RIME_API_KEY", "")
+    openai_api_key: str = _clean_env("OPENAI_API_KEY", "")
+    gemini_api_key: str = _clean_env("GEMINI_API_KEY", "")
+    anthropic_api_key: str = _clean_env("ANTHROPIC_API_KEY", "")
 
     # Google Cloud & Google Drive / Calendar Settings
-    google_client_id: str = os.getenv("GOOGLE_CLIENT_ID", "")
-    google_client_secret: str = os.getenv("GOOGLE_CLIENT_SECRET", "")
-    google_api_key: str = os.getenv("GOOGLE_API_KEY", "")
-    google_redirect_uri: str = os.getenv("GOOGLE_REDIRECT_URI", "http://localhost:5173")
-    google_refresh_token: str = os.getenv("GOOGLE_REFRESH_TOKEN", "")
+    google_client_id: str = _clean_env("GOOGLE_CLIENT_ID", "")
+    google_client_secret: str = _clean_env("GOOGLE_CLIENT_SECRET", "")
+    google_api_key: str = _clean_env("GOOGLE_API_KEY", "")
+    google_redirect_uri: str = _clean_env("GOOGLE_REDIRECT_URI", "http://localhost:5173")
+    google_refresh_token: str = _clean_env("GOOGLE_REFRESH_TOKEN", "")
 
     # Meeting Bot Provider (Recall.ai for cloud bot or local headless browser)
-    recall_ai_api_key: str = os.getenv("RECALL_AI_API_KEY", "")
-    recall_ai_region: str = os.getenv("RECALL_AI_REGION", "ap-northeast-1")
-    recall_ai_webhook_secret: str = os.getenv("RECALL_AI_WEBHOOK_SECRET", "")
+    recall_ai_api_key: str = _clean_env("RECALL_AI_API_KEY", "")
+    recall_ai_region: str = _clean_env("RECALL_AI_REGION", "ap-northeast-1")
+    recall_ai_webhook_secret: str = _clean_env("RECALL_AI_WEBHOOK_SECRET", "")
 
     # Notification / Email Settings
     resend_api_key: str = os.getenv("RESEND_API_KEY", "")
