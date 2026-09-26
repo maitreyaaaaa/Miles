@@ -238,6 +238,8 @@ def calculate_pcm_rms(pcm_bytes: bytes) -> float:
 # ==========================================
 
 
+@app.get("/")
+@app.get("/health")
 @app.get("/api/health")
 async def health_check():
     """System health check & active provider status."""
