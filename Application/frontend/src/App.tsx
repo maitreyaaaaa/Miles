@@ -965,6 +965,7 @@ function App() {
           telemetry={telemetry}
           transcriptCount={transcripts.filter((line) => line.is_final).length}
           interruptions={interruptionCount}
+          backendUrl={BACKEND_URL}
           onClose={() => setReport(null)}
         />
       )}
