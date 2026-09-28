@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from "react";
 import { CheckCircle2, Mic, Play, ShieldCheck, Volume2, X } from "lucide-react";
+import { useAccessibleDialog } from "../hooks/useAccessibleDialog";
 
 interface PreflightModalProps {
   isOpen: boolean;
@@ -12,19 +13,28 @@ export const PreflightModal: React.FC<PreflightModalProps> = ({ isOpen, onClose,
   const [micActive, setMicActive] = useState(false);
   const [micLevel, setMicLevel] = useState(0);
   const [speakerTested, setSpeakerTested] = useState(false);
+  const [micError, setMicError] = useState<string | null>(null);
 
   const audioCtxRef = useRef<AudioContext | null>(null);
   const chimeCtxRef = useRef<AudioContext | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const animFrameRef = useRef<number | null>(null);
+  const dialogRef = useAccessibleDialog<HTMLDivElement>(isOpen, onClose);
 
   useEffect(() => {
     if (!isOpen) return;
 
     // Start mic monitor
     let active = true;
-    navigator.mediaDevices
-      ?.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } })
+    setMicActive(false);
+    setMicLevel(0);
+    setSpeakerTested(false);
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setMicError("Microphone testing is not supported by this browser.");
+      return;
+    }
+    setMicError(null);
+    navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } })
       .then((stream) => {
         if (!active) {
           stream.getTracks().forEach((t) => t.stop());
@@ -54,7 +64,12 @@ export const PreflightModal: React.FC<PreflightModalProps> = ({ isOpen, onClose,
         };
         updateRms();
       })
-      .catch((e) => console.warn("Mic preflight access error:", e));
+      .catch((e) => {
+        setMicError(e instanceof Error && e.name === "NotAllowedError"
+          ? "Microphone permission was denied. Allow microphone access to use voice sparring."
+          : "The microphone could not be started. Check your browser and device settings.");
+        console.warn("Mic preflight access error:", e);
+      });
 
     return () => {
       active = false;
@@ -126,10 +141,12 @@ export const PreflightModal: React.FC<PreflightModalProps> = ({ isOpen, onClose,
   return (
     <div className="preflight-overlay" role="presentation" onClick={onClose}>
       <div
+        ref={dialogRef}
         className="preflight-modal"
         role="dialog"
         aria-modal="true"
-        aria-label="Voice Preflight Check"
+        aria-labelledby="preflight-title"
+        tabIndex={-1}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="preflight-header">
@@ -138,7 +155,7 @@ export const PreflightModal: React.FC<PreflightModalProps> = ({ isOpen, onClose,
               <ShieldCheck size={20} />
             </div>
             <div className="preflight-titles">
-              <h2>Audio &amp; Voice Setup</h2>
+              <h2 id="preflight-title">Audio &amp; Voice Setup</h2>
               <p>Calibrate microphone input &amp; verify audio playback</p>
             </div>
           </div>
@@ -164,8 +181,8 @@ export const PreflightModal: React.FC<PreflightModalProps> = ({ isOpen, onClose,
                   <div className="preflight-item-sub">Speak to test microphone sensitivity</div>
                 </div>
               </div>
-              <span className={`preflight-status-badge ${micActive ? "active" : ""}`}>
-                {micActive ? "Signal Detected" : "Speak to test"}
+              <span className={`preflight-status-badge ${micActive ? "active" : ""}`} role={micError ? "alert" : "status"}>
+                {micError || (micActive ? "Signal Detected" : "Speak to test")}
               </span>
             </div>
             <div className="preflight-meter-track">

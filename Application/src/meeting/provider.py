@@ -133,46 +133,6 @@ class MockMeetingBotProvider(MeetingBotProvider):
             await channel.close()
 
 
-class HeadlessMeetBotProvider(MeetingBotProvider):
-    """Containerized/local headless browser Google Meet bot provider.
-    
-    Spawns an audio-only headless Chromium process with:
-    - Camera disabled (--disable-video-capture)
-    - Auto-admit audio flags (--use-fake-ui-for-media-stream, --autoplay-policy=no-user-gesture-required)
-    - PulseAudio / ALSA virtual loopback device for microphone injection and speaker capture.
-    """
-
-    def __init__(self, use_mock_fallback: bool = True):
-        self.use_mock_fallback = use_mock_fallback
-        self.active_channels: Dict[str, MeetingAudioChannel] = {}
-
-    @property
-    def provider_mode(self) -> str:
-        return "mock_fallback" if self.use_mock_fallback else "headless"
-
-    @property
-    def provider_notice(self) -> str:
-        if self.use_mock_fallback:
-            return "Headless Meet provider is not wired yet; sessions run in local mock simulation mode."
-        return "Headless browser meeting provider is configured."
-
-    async def join_meeting(self, session: MeetingSession) -> MeetingAudioChannel:
-        logger.info(
-            f"[HeadlessMeetBotProvider] Initializing headless Google Meet worker for {session.meet_url} "
-            f"(Participant: '{session.config.participant_name}', Audio-Only: {session.config.audio_only})"
-        )
-        # In environments without live PulseAudio / Playwright installed, fall back cleanly to mock channel
-        channel = MockMeetingAudioChannel(session.meeting_id)
-        self.active_channels[session.meeting_id] = channel
-        return channel
-
-    async def leave_meeting(self, meeting_id: str) -> None:
-        logger.info(f"[HeadlessMeetBotProvider] Terminating meeting bot: {meeting_id}")
-        channel = self.active_channels.pop(meeting_id, None)
-        if channel:
-            await channel.close()
-
-
 class RecallMeetBotProvider(MeetingBotProvider):
     """Cloud meeting bot provider using Recall.ai.
     
@@ -193,37 +153,14 @@ class RecallMeetBotProvider(MeetingBotProvider):
 
     @property
     def provider_notice(self) -> str:
-        return f"Recall.ai cloud meeting bot provider configured (Region: {self.service.region}). Bot will join meeting call."
+        return (
+            f"Recall.ai meeting audio is enabled in {self.service.region}."
+        )
 
     async def join_meeting(self, session: MeetingSession) -> MeetingAudioChannel:
-        logger.info(
-            f"[RecallMeetBotProvider] Dispatching cloud bot to {session.meet_url} via Recall.ai ({self.service.region})..."
+        raise RuntimeError(
+            "Recall live audio uses its webpage bridge; dispatch the session through the Recall bot API."
         )
-        channel = MockMeetingAudioChannel(session.meeting_id)
-        self.active_channels[session.meeting_id] = channel
-
-        if self.service.api_key:
-            try:
-                bot_name = f"Miles AI ({session.persona_id.replace('_', ' ').title()})"
-                metadata = {
-                    "session_id": session.meeting_id,
-                    "persona_id": session.persona_id,
-                    "difficulty": session.difficulty,
-                    "topic": session.topic,
-                }
-                bot_data = await self.service.create_bot(
-                    meeting_url=session.meet_url,
-                    bot_name=bot_name,
-                    metadata=metadata,
-                )
-                bot_id = bot_data.get("id", "")
-                self.active_bot_ids[session.meeting_id] = bot_id
-                self.bot_statuses[session.meeting_id] = "joining_call"
-                logger.info(f"[RecallMeetBotProvider] Recall bot {bot_id} dispatched for session {session.meeting_id}")
-            except Exception as e:
-                logger.error(f"[RecallMeetBotProvider] Error invoking Recall.ai API: {e}")
-
-        return channel
 
     async def leave_meeting(self, meeting_id: str) -> None:
         bot_id = self.active_bot_ids.pop(meeting_id, None)
@@ -244,4 +181,24 @@ def get_default_meeting_provider() -> MeetingBotProvider:
     """Return default meeting provider configured for environment."""
     if config.recall_ai_enabled:
         return RecallMeetBotProvider()
-    return HeadlessMeetBotProvider(use_mock_fallback=True)
+    if config.app_environment == "production":
+        return UnconfiguredMeetingBotProvider()
+    return MockMeetingBotProvider()
+
+
+class UnconfiguredMeetingBotProvider(MeetingBotProvider):
+    """Fail clearly in production instead of pretending a mock joined a call."""
+
+    @property
+    def provider_mode(self) -> str:
+        return "unconfigured"
+
+    @property
+    def provider_notice(self) -> str:
+        return "No live meeting bot provider is configured for this deployment."
+
+    async def join_meeting(self, session: MeetingSession) -> MeetingAudioChannel:
+        raise RuntimeError("Configure Recall.ai before starting a live meeting.")
+
+    async def leave_meeting(self, meeting_id: str) -> None:
+        return None

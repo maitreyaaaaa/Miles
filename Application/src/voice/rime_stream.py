@@ -32,7 +32,7 @@ class RimeStreamingTTSClient:
     
     Features:
     - Streams 22050Hz audio directly from users.rime.ai/v1/rime-tts.
-    - Full-Duplex Barge-in: Cancels in-flight HTTP stream and purges audio buffers in <5ms.
+    - Barge-in: Cancels server-side speech generation; browser playback cutoff is separate.
     - Zero-downtime offline Windows SAPI fallback.
     """
 

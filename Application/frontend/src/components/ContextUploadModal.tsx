@@ -17,6 +17,9 @@ import {
   ExternalLink,
 } from "lucide-react";
 import type { ContextDossier } from "../types";
+import { apiFetch } from "../api";
+import { useGoogleIntegrations } from "../auth/GoogleIntegrationContext";
+import { useAccessibleDialog } from "../hooks/useAccessibleDialog";
 
 interface ContextUploadModalProps {
   isOpen: boolean;
@@ -42,10 +45,11 @@ export const ContextUploadModal: React.FC<ContextUploadModalProps> = ({
   const [pastedText, setPastedText] = useState("");
   const [pastedTitle, setPastedTitle] = useState("");
   const [driveUrl, setDriveUrl] = useState("");
-  const [googleAccessToken, setGoogleAccessToken] = useState("");
-  const [googleConfig, setGoogleConfig] = useState<{ client_id?: string; drive_enabled?: boolean } | null>(null);
+  const [googleConfig, setGoogleConfig] = useState<{ oauth_enabled?: boolean; drive_enabled?: boolean } | null>(null);
   const [previewDossier, setPreviewDossier] = useState<ContextDossier | null>(activeContext);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const { driveAccessToken, connectDrive, connectingPurpose, integrationError, clearIntegrationError } = useGoogleIntegrations();
+  const dialogRef = useAccessibleDialog<HTMLDivElement>(isOpen, onClose, !isLoading);
 
   useEffect(() => {
     if (activeContext) {
@@ -55,7 +59,7 @@ export const ContextUploadModal: React.FC<ContextUploadModalProps> = ({
 
   useEffect(() => {
     if (isOpen) {
-      fetch(`${backendUrl}/api/auth/google/config`)
+      apiFetch(`${backendUrl}/api/auth/google/config`)
         .then((res) => res.json())
         .then((data) => setGoogleConfig(data))
         .catch(() => setGoogleConfig(null));
@@ -71,7 +75,7 @@ export const ContextUploadModal: React.FC<ContextUploadModalProps> = ({
       const formData = new FormData();
       formData.append("file", file);
 
-      const resp = await fetch(`${backendUrl}/api/context/upload`, {
+      const resp = await apiFetch(`${backendUrl}/api/context/upload`, {
         method: "POST",
         body: formData,
       });
@@ -99,7 +103,7 @@ export const ContextUploadModal: React.FC<ContextUploadModalProps> = ({
     setIsLoading(true);
     setErrorMsg(null);
     try {
-      const resp = await fetch(`${backendUrl}/api/context/paste`, {
+      const resp = await apiFetch(`${backendUrl}/api/context/paste`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -131,12 +135,12 @@ export const ContextUploadModal: React.FC<ContextUploadModalProps> = ({
     setIsLoading(true);
     setErrorMsg(null);
     try {
-      const resp = await fetch(`${backendUrl}/api/context/google-drive/import`, {
+      const resp = await apiFetch(`${backendUrl}/api/context/google-drive/import`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           url_or_id: driveUrl.trim(),
-          access_token: googleAccessToken.trim() || undefined,
+          access_token: driveAccessToken || undefined,
         }),
       });
 
@@ -171,12 +175,15 @@ export const ContextUploadModal: React.FC<ContextUploadModalProps> = ({
   };
 
   return (
-    <div className="context-modal-backdrop" onClick={onClose}>
+    <div className="context-modal-backdrop" role="presentation" onClick={() => { if (!isLoading) onClose(); }}>
       <div
+        ref={dialogRef}
         className="context-modal-dialog"
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
+        aria-labelledby="context-modal-title"
+        tabIndex={-1}
       >
         {/* Header */}
         <div className="context-modal-header">
@@ -185,13 +192,13 @@ export const ContextUploadModal: React.FC<ContextUploadModalProps> = ({
               <FileCheck size={18} />
             </div>
             <div>
-              <h3>Add Your Pitch Deck, CV, or Notes</h3>
+              <h3 id="context-modal-title">Add Your Pitch Deck, CV, or Notes</h3>
               <p>
                 Upload or connect your document. Miles will pull out your key numbers and challenge you on them.
               </p>
             </div>
           </div>
-          <button type="button" className="context-modal-close" onClick={onClose}>
+          <button type="button" className="context-modal-close" onClick={onClose} disabled={isLoading} aria-label="Close document context dialog">
             <X size={18} />
           </button>
         </div>
@@ -369,11 +376,25 @@ Churn is 1.8% monthly."
                 </div>
               </div>
 
+              <div className="drive-connect-row">
+                {driveAccessToken ? (
+                  <span>Google Drive is connected in this tab. Access expires automatically.</span>
+                ) : (
+                  <button
+                    type="button"
+                    className="secondary-btn"
+                    onClick={() => { clearIntegrationError(); void connectDrive(); }}
+                    disabled={connectingPurpose !== null || googleConfig?.oauth_enabled === false}
+                  >
+                    {connectingPurpose === "drive" ? "Connecting Google Drive…" : googleConfig?.oauth_enabled === false ? "Google Drive connection unavailable" : "Connect Google Drive for private files"}
+                  </button>
+                )}
+              </div>
+              {integrationError && <p className="integration-error" role="alert">{integrationError}</p>}
               {googleConfig && !googleConfig.drive_enabled && (
-                <div style={{ padding: "10px 14px", background: "#fef3c7", border: "1px solid #fde68a", borderRadius: "8px", fontSize: "0.82rem", color: "#92400e" }}>
-                  💡 <strong>Public Link Mode:</strong> You can paste any publicly shared Google Doc or Sheet link ("Anyone with the link can view") immediately. To access private files, add your <code>GOOGLE_CLIENT_ID</code> and <code>GOOGLE_CLIENT_SECRET</code> to <code>.env</code>.
-                </div>
+                <p className="integration-hint">Google Drive authorization is not configured yet. Publicly shared links may still work.</p>
               )}
+              <p className="integration-hint">Public links can be imported without connecting. Private files require your separate Google Drive approval.</p>
 
               <div className="context-tips-box">
                 <div className="tips-header">

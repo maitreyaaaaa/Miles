@@ -1,122 +1,71 @@
-# Miles: Full-Duplex Adversarial Voice Sparring Partner
+# Miles
 
-> **A high-stakes verbal negotiation & debate sparring partner that tests your composure, speech cadence, and logical resilience under intense psychological pressure.**
+Miles is a voice sparring app with a FastAPI backend and a React frontend. It runs a spoken debate, scores the conversation, and saves reports and meeting records locally.
 
-Built concurrently for two premier voice hackathons:
-1. **AssemblyAI Voice Agent Hackathon (lablab.ai):** Powers real-time streaming speech recognition via Universal-Streaming v3 (sub-200ms latency), live filler word detection ("um", "uh", "like", "basically"), speech cadence/WPM tracking, and composure intelligence scoring.
-2. **DataForge Pathway x Rime Hackathon:** Powers ultra-low latency spoken output via Rime neural streaming TTS, solving the hardest voice challenge: **Full-Duplex Interruption & Pressure Dynamics (<100ms barge-in cut-off)**.
+## What is in the repository
 
----
+- `Application/src/` — Python API, debate engine, speech providers, Google integrations, and meeting lifecycle.
+- `Application/frontend/` — React and TypeScript app.
+- `Application/tests/` — automated backend tests. Provider calls are not part of pytest discovery.
+- `Application/docs/` and the root planning documents — older design notes; check the code and this README for current behavior.
 
-## 🏛️ Architecture & Full-Duplex Audio Pipeline
+## Integrations
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                            WEB BROWSER (Codex UI)                           │
-│  • Web Audio API (navigator.mediaDevices.getUserMedia at 16kHz PCM mono)    │
-│  • Real-Time Pressure & Composure HUD (0-100 score, WPM gauge, filler tally)│
-│  • Sub-100ms Instant Audio Queue Flush on User Barge-in                     │
-└──────────────────────────────────────┬──────────────────────────────────────┘
-                                       │ WebSocket (ws://localhost:8000/ws/debate)
-                                       ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                     FASTAPI FULL-DUPLEX WEBSOCKET SERVER                    │
-│                                                                             │
-│  ┌─────────────────────────┐                   ┌─────────────────────────┐  │
-│  │  AssemblyAI Streaming   │                   │    Rime Neural TTS      │  │
-│  │ • Universal-Streaming v3│                   │ • users.rime.ai/v1/tts  │  │
-│  │ • Live partials & finals│                   │ • Stream cancel <5ms    │  │
-│  │ • Disfluency detection  │                   │ • Windows SAPI fallback │  │
-│  └────────────┬────────────┘                   └────────────▲────────────┘  │
-│               │ Transcripts                                 │ Audio Chunks  │
-│               ▼                                             │               │
-│  ┌──────────────────────────────────────────────────────────┴────────────┐  │
-│  │                   FULL-DUPLEX INTERRUPTION MANAGER                    │  │
-│  │ • User Barge-in: Sub-100ms audio cancellation & memory truncation     │  │
-│  │ • AI Interruption: Instant cut-off when user stalls (>2.2s) or waffling│  │
-│  └────────────────────────────┬──────────────────────────────────────────┘  │
-│                               │ Context & Events                            │
-│                               ▼                                             │
-│  ┌───────────────────────────────────────────────────────────────────────┐  │
-│  │                  ADVERSARIAL LLM DEBATE ENGINE                        │  │
-│  │ • Anti-Sycophancy Policy: Zero politeness / no "good points"          │  │
-│  │ • Spoken Brevity (<25 words per turn) ending with pointed traps       │  │
-│  │ • Dynamic Contrarian Inversion for ANY custom user topic              │  │
-│  │ • Multi-Provider Connector (OpenAI gpt-4o-mini / Gemini / Anthropic)  │  │
-│  │ • Real-time Composure & Speech Cadence Scoring (0-100 + Debrief)      │  │
-│  └───────────────────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
+- **Speech:** AssemblyAI streaming transcription and Rime streaming speech are optional. The app has local fallbacks when provider keys are not configured.
+- **Language models:** OpenAI, Gemini, and Anthropic are supported, with a local mock fallback.
+- **Google Drive:** imports context documents and can export debriefs when Google credentials are configured.
+- **Google Calendar / Meet:** provisions calendar events and meeting links when Google credentials are configured.
+- **Recall.ai:** creates and schedules cloud bots, streams meeting audio through Recall Output Media into Miles' AssemblyAI/LLM/Rime loop, and tracks lifecycle state through signed webhooks. Live setup is documented in [`Application/docs/meeting-bot.md`](Application/docs/meeting-bot.md). Local development may still use an explicit mock provider.
 
----
+Live integrations need their provider credentials in `Application/.env`; start from `Application/.env.example`. Never commit `.env` files.
 
-## 🎭 Debate Personas & Modes
+## User accounts and deployment
 
-1. **The Skeptical Tier-1 VC (`vc_pitch`):**
-   - **Marcus Vance**: Relentlessly grills your startup pitch on CAC, LTV, payback windows, defensibility, and competitive moats.
-2. **The Hardball VP of Talent (`salary_negotiation`):**
-   - **Elena Rostova**: Hardball compensation negotiation. Counters aggressive salary demands, protects equity caps, and demands proof of revenue impact.
-3. **The Hostile Legal Prosecutor (`hostile_cross_exam`):**
-   - **DA Carter**: Courtroom cross-examination. Pounces on inconsistencies, timeline gaps, and hesitations.
-4. **Open Freeform Contrarian Debate (`custom_debate`):**
-   - **Any topic the user wants!** The user types or speaks a topic (e.g. *"Remote work is superior"*, *"AI will replace programmers"*), and the AI immediately detects the stance, inverts it, and takes an aggressive contrarian position.
+Miles uses Supabase Auth for Google sign-in and six-digit email codes. Google Drive and Calendar consent remains a separate integration permission. Follow [`Application/docs/authentication.md`](Application/docs/authentication.md) to configure the Supabase project, frontend values, API token verification, and production origin allowlist. The API fails closed when Supabase is not configured.
 
----
+Production context, meeting, and debrief records use Supabase PostgreSQL with owner keys, row-level security, and a restricted runtime database role. Local development without `DATABASE_URL` keeps JSON storage under `MILES_DATA_DIR`; production startup fails without PostgreSQL. Active voice WebSockets remain in process memory, so run one backend process until shared session coordination is implemented. The API host must support long-lived WebSocket connections.
 
-## ⚡ Full-Duplex Interruption (<100ms Barge-in)
+## Run locally
 
-In verbal sparring, rigid turn-taking ruins realism. Miles implements dual-direction interruption:
-- **User Barge-in:** When the user interrupts the AI mid-sentence, active audio streaming terminates in **< 1 ms**, in-flight buffers are purged, and the AI's conversation memory truncates so it only recalls what was heard before the cut-off.
-- **AI Interruption:** If the user hesitates for $> 2.2\text{ s}$, stutters on 3+ filler words ("um", "like", "basically"), or uses empty corporate buzzwords ("synergy", "paradigm"), the AI interrupts with a sharp counter-challenge.
+Use Python 3.12 or newer and Node.js. From `Application/`:
 
----
-
-## 🚀 Quick Start
-
-### 1. Requirements
-- Windows 10 / 11, macOS, or Linux
-- Python 3.12+
-- Microphone
-
-### 2. Install Dependencies
 ```powershell
-cd Application
-pip install -e .
-```
-
-### 3. Configure `.env`
-Ensure your `.env` file contains your API keys:
-```env
-ASSEMBLYAI_API_KEY=your_assemblyai_key
-RIME_API_KEY=your_rime_key       # Optional (falls back to local voice engine if omitted)
-OPENAI_API_KEY=your_openai_key   # Optional (falls back to Gemini or heuristic offline sparring engine)
-GEMINI_API_KEY=your_gemini_key   # Optional
-```
-
-### 4. Start Backend Server
-```powershell
-uvicorn src.api.server:app --reload --host 0.0.0.0 --port 8000
-# or:
+pip install -e ".[dev]"
 python main.py
 ```
 
-- **Interactive API Documentation:** `http://localhost:8000/docs`
-- **Live WebSocket:** `ws://localhost:8000/ws/debate`
+The API listens on `http://localhost:8000` by default. Set `PORT` to change the listener port. Run the frontend in another terminal:
 
----
-
-## 🧪 Verification & Benchmark Suite
-
-### Run All Unit & Integration Tests (22 Tests)
 ```powershell
-pytest -v
+cd frontend
+npm install
+npm run dev
 ```
 
-### Run Barge-in Latency Benchmark (DataForge Evidence)
-```powershell
-python benchmark_interruption.py
-```
-Measures 10 continuous trials of in-flight speech interruption with microsecond precision. Demonstrates average cut-off latency of **< 0.2 ms**, well within the sub-100ms hackathon threshold.
+## Check changes
 
-See [`RIME_EVIDENCE.md`](./RIME_EVIDENCE.md) for full acceptance test criteria and submission data.
-See [`CODEX_CONTEXT.md`](./CODEX_CONTEXT.md) and [`FRONTEND_BROWSER_GUIDE.md`](./FRONTEND_BROWSER_GUIDE.md) for frontend integration guides.
+From `Application/`:
+
+```powershell
+pytest -q
+```
+
+Build the frontend from `Application/frontend/`:
+
+```powershell
+npm run build
+```
+
+The optional provider smoke check calls AssemblyAI and Rime and may use provider quota. Run it only when intended:
+
+```powershell
+python scripts/provider_smoke_check.py --live
+```
+
+`python benchmark_interruption.py --live` also streams speech through the configured TTS provider. It measures simulated server-side cancellation response only. It does not measure microphone detection, browser playback buffers, or end-to-end audible cutoff; see [`Application/RIME_EVIDENCE.md`](Application/RIME_EVIDENCE.md).
+
+## Local data
+
+JSON data used by local development defaults to `Application/data/`. Set `MILES_DATA_DIR` to select another directory or to point the explicit legacy importer at existing files. Docker build contexts exclude `.env`, local data, caches, and dependency folders.
+
+See [`Application/docs/data-storage.md`](Application/docs/data-storage.md) for schema setup, runtime database credentials, and the safe JSON import process.

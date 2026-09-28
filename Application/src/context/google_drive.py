@@ -12,12 +12,10 @@ from src.config import config
 
 logger = logging.getLogger(__name__)
 
-# Scopes needed for Google Drive and Google Calendar/Meet
-GOOGLE_OAUTH_SCOPES = [
-    "https://www.googleapis.com/auth/drive.readonly",
-    "https://www.googleapis.com/auth/drive.file",
-    "https://www.googleapis.com/auth/calendar.events",
-]
+GOOGLE_OAUTH_SCOPES = {
+    "drive": ["https://www.googleapis.com/auth/drive.readonly"],
+    "calendar": ["https://www.googleapis.com/auth/calendar.events"],
+}
 
 # Patterns for Google Drive, Docs, Sheets, Slides URLs
 DOCS_URL_PATTERNS = [
@@ -48,76 +46,48 @@ def extract_google_drive_file_id(url_or_id: str) -> Optional[str]:
     return None
 
 
-def get_google_auth_url(redirect_uri: Optional[str] = None, state: Optional[str] = None) -> str:
-    """Generate the Google OAuth 2.0 authorization URL for Drive and Calendar."""
+def get_google_auth_url(purpose: str, state: str) -> str:
+    """Generate a scoped Google OAuth URL for a signed-in user's integration."""
     client_id = config.google_client_id
     if not client_id:
         raise ValueError("GOOGLE_CLIENT_ID is not configured in .env.")
+    if purpose not in GOOGLE_OAUTH_SCOPES:
+        raise ValueError("Google integration purpose must be 'drive' or 'calendar'.")
 
-    redirect = redirect_uri or config.google_redirect_uri
     params = {
         "client_id": client_id,
-        "redirect_uri": redirect,
+        "redirect_uri": config.google_redirect_uri,
         "response_type": "code",
-        "scope": " ".join(GOOGLE_OAUTH_SCOPES),
+        "scope": " ".join(GOOGLE_OAUTH_SCOPES[purpose]),
         "access_type": "offline",
         "prompt": "consent",
+        "state": state,
     }
-    if state:
-        params["state"] = state
-
     return f"https://accounts.google.com/o/oauth2/v2/auth?{urllib.parse.urlencode(params)}"
 
 
-async def exchange_google_code_for_tokens(
-    code: str,
-    redirect_uri: Optional[str] = None,
-) -> Dict[str, Any]:
+async def exchange_google_code_for_tokens(code: str) -> Dict[str, Any]:
     """Exchange OAuth authorization code for Google access and refresh tokens."""
     client_id = config.google_client_id
     client_secret = config.google_client_secret
     if not client_id or not client_secret:
         raise ValueError("GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must be configured.")
 
-    redirect = redirect_uri or config.google_redirect_uri
     token_url = "https://oauth2.googleapis.com/token"
 
     payload = {
         "code": code,
         "client_id": client_id,
         "client_secret": client_secret,
-        "redirect_uri": redirect,
+        "redirect_uri": config.google_redirect_uri,
         "grant_type": "authorization_code",
     }
 
     async with httpx.AsyncClient(timeout=15.0) as client:
         resp = await client.post(token_url, data=payload)
         if resp.status_code != 200:
-            logger.error(f"[GoogleOAuth] Token exchange failed: {resp.text}")
-            raise ValueError(f"Google token exchange failed ({resp.status_code}): {resp.text}")
-        return resp.json()
-
-
-async def refresh_google_access_token(refresh_token: str) -> Dict[str, Any]:
-    """Obtain a new access token using a refresh token."""
-    client_id = config.google_client_id
-    client_secret = config.google_client_secret
-    if not client_id or not client_secret:
-        raise ValueError("GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET must be configured.")
-
-    token_url = "https://oauth2.googleapis.com/token"
-    payload = {
-        "client_id": client_id,
-        "client_secret": client_secret,
-        "refresh_token": refresh_token,
-        "grant_type": "refresh_token",
-    }
-
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        resp = await client.post(token_url, data=payload)
-        if resp.status_code != 200:
-            logger.error(f"[GoogleOAuth] Refresh token exchange failed: {resp.text}")
-            raise ValueError(f"Failed to refresh Google token ({resp.status_code}): {resp.text}")
+            logger.error("[GoogleOAuth] Token exchange failed with HTTP %s", resp.status_code)
+            raise ValueError(f"Google token exchange failed ({resp.status_code}).")
         return resp.json()
 
 
@@ -166,15 +136,6 @@ class GoogleDriveService:
 
         if self.access_token:
             creds = Credentials(token=self.access_token)
-            return build("drive", "v3", credentials=creds, cache_discovery=False)
-        elif config.google_refresh_token and config.google_client_id and config.google_client_secret:
-            creds = Credentials(
-                token=None,
-                refresh_token=config.google_refresh_token,
-                token_uri="https://oauth2.googleapis.com/token",
-                client_id=config.google_client_id,
-                client_secret=config.google_client_secret,
-            )
             return build("drive", "v3", credentials=creds, cache_discovery=False)
         elif config.google_api_key:
             return build("drive", "v3", developerKey=config.google_api_key, cache_discovery=False)

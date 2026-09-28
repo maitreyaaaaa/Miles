@@ -54,6 +54,8 @@ class RecallService:
         join_at: Optional[Union[str, datetime.datetime]] = None,
         metadata: Optional[Dict[str, Any]] = None,
         transcription_provider: Optional[str] = None,
+        output_media_url: Optional[str] = None,
+        max_duration_seconds: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Deploy an ad-hoc or scheduled meeting bot.
         
@@ -81,6 +83,21 @@ class RecallService:
         if metadata:
             payload["metadata"] = metadata
 
+        if output_media_url:
+            payload["output_media"] = {
+                "camera": {
+                    "kind": "webpage",
+                    "config": {"url": output_media_url},
+                }
+            }
+
+        if max_duration_seconds is not None:
+            max_duration = max(1, int(max_duration_seconds))
+            payload["automatic_leave"] = {
+                "in_call_recording_timeout": max_duration,
+                "in_call_not_recording_timeout": max_duration,
+            }
+
         if transcription_provider:
             normalized_provider = "assembly_ai_v3" if transcription_provider == "assemblyai" else transcription_provider
             payload["transcription_options"] = {"provider": normalized_provider}
@@ -94,7 +111,7 @@ class RecallService:
 
             if resp.status_code in (200, 201):
                 data = resp.json()
-                logger.info(f"[RecallService] Successfully spawned bot {data.get('id')} for {meeting_url}")
+                logger.info("[RecallService] Recall bot accepted: %s", data.get("id"))
                 return data
 
             err_text = resp.text
@@ -119,7 +136,10 @@ class RecallService:
     async def leave_call(self, bot_id: str) -> bool:
         """Command an in-call or joining bot to exit the meeting room."""
         async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(f"{self.base_url}/bot/{bot_id}/leave_call/", headers=self.headers)
+            try:
+                resp = await client.post(f"{self.base_url}/bot/{bot_id}/leave_call/", headers=self.headers)
+            except httpx.RequestError as exc:
+                raise RecallAPIError("Network error ending the Recall.ai bot.", status_code=503) from exc
             if resp.status_code in (200, 204):
                 logger.info(f"[RecallService] Bot {bot_id} instructed to leave call.")
                 return True
@@ -129,7 +149,10 @@ class RecallService:
     async def delete_scheduled_bot(self, bot_id: str) -> bool:
         """Delete/cancel a future scheduled bot before it begins joining."""
         async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.delete(f"{self.base_url}/bot/{bot_id}/", headers=self.headers)
+            try:
+                resp = await client.delete(f"{self.base_url}/bot/{bot_id}/", headers=self.headers)
+            except httpx.RequestError as exc:
+                raise RecallAPIError("Network error cancelling the scheduled Recall.ai bot.", status_code=503) from exc
             if resp.status_code in (200, 204):
                 logger.info(f"[RecallService] Scheduled bot {bot_id} deleted.")
                 return True
@@ -163,11 +186,15 @@ class RecallService:
         Follows Recall.ai cryptographic verification standard:
         toSign = "{webhook-id}.{webhook-timestamp}.{raw_payload}"
         """
-        webhook_secret = secret or config.recall_ai_webhook_secret
-        if not webhook_secret:
-            # If no verification secret configured in .env, skip verification in dev
-            logger.warning("[RecallWebhook] RECALL_AI_WEBHOOK_SECRET is not configured; skipping verification.")
-            return True
+        webhook_secrets = [secret] if secret else [
+            value for value in (
+                getattr(config, "recall_ai_webhook_secret", ""),
+                getattr(config, "recall_ai_svix_webhook_secret", ""),
+            ) if value
+        ]
+        if not webhook_secrets:
+            logger.error("[RecallWebhook] RECALL_AI_WEBHOOK_SECRET is not configured; rejecting webhook.")
+            return False
 
         # Standardize headers (case-insensitive)
         lower_headers = {k.lower(): v for k, v in headers.items()}
@@ -182,22 +209,19 @@ class RecallService:
         # Prepare raw payload string
         payload_str = payload.decode("utf-8") if isinstance(payload, bytes) else str(payload)
 
-        # Handle 'whsec_' prefix
-        raw_secret = webhook_secret[6:] if webhook_secret.startswith("whsec_") else webhook_secret
-        try:
-            key_bytes = base64.b64decode(raw_secret)
-        except Exception:
-            key_bytes = raw_secret.encode("utf-8")
-
         to_sign = f"{msg_id}.{msg_timestamp}.{payload_str}".encode("utf-8")
-        expected_sig = base64.b64encode(hmac.new(key_bytes, to_sign, hashlib.sha256).digest()).decode("utf-8")
-
-        # Recall delivers signatures formatted as: "v1,signature1 v1,signature2"
-        for candidate in msg_signature.split():
-            parts = candidate.split(",", 1)
-            if len(parts) == 2 and parts[0] == "v1":
-                if hmac.compare_digest(parts[1], expected_sig):
-                    return True
+        # Recall delivers signatures formatted as: "v1,signature1 v1,signature2".
+        candidates = [part.split(",", 1) for part in msg_signature.split()]
+        signatures = [parts[1] for parts in candidates if len(parts) == 2 and parts[0] == "v1"]
+        for webhook_secret in webhook_secrets:
+            raw_secret = webhook_secret[6:] if webhook_secret.startswith("whsec_") else webhook_secret
+            try:
+                key_bytes = base64.b64decode(raw_secret, validate=True)
+            except Exception:
+                key_bytes = raw_secret.encode("utf-8")
+            expected_sig = base64.b64encode(hmac.new(key_bytes, to_sign, hashlib.sha256).digest()).decode("utf-8")
+            if any(hmac.compare_digest(candidate, expected_sig) for candidate in signatures):
+                return True
 
         logger.warning("[RecallWebhook] HMAC signature mismatch.")
         return False

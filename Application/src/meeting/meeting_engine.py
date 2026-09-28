@@ -42,7 +42,7 @@ class MeetingEngineCoordinator:
         # Load attached context dossier if present
         self.context_dossier: Optional[Dict[str, Any]] = None
         if self.session.context_id:
-            dossier_obj = get_context_store().get_context(self.session.context_id)
+            dossier_obj = get_context_store().get_context(self.session.owner_id or "", self.session.context_id)
             if dossier_obj:
                 self.context_dossier = dossier_obj.to_dict()
                 if not self.session.context_filename:

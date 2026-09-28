@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import random
 import string
@@ -36,6 +37,7 @@ class MeetingScheduler:
 
     def schedule_meeting(
         self,
+        owner_id: str,
         meet_url: Optional[str] = None,
         context_id: Optional[str] = None,
         persona_id: str = "vc_pitch",
@@ -53,11 +55,12 @@ class MeetingScheduler:
 
         context_filename = None
         if context_id:
-            dossier = get_context_store().get_context(context_id)
+            dossier = get_context_store().get_context(owner_id, context_id)
             if dossier:
                 context_filename = dossier.filename
 
         session = MeetingSession(
+            owner_id=owner_id,
             meet_url=final_url,
             context_id=context_id,
             context_filename=context_filename,
@@ -75,51 +78,63 @@ class MeetingScheduler:
         logger.info(f"[MeetingScheduler] Scheduled Google Meet session: {session.meeting_id} ({session.meet_url})")
         return session
 
-    async def start_meeting(self, meeting_id: str) -> MeetingEngineCoordinator:
+    async def start_meeting(self, owner_id: str, meeting_id: str) -> MeetingEngineCoordinator:
         """Launch bot into the scheduled Google Meet room."""
-        session = self.store.get_session(meeting_id)
+        session = await asyncio.to_thread(self.store.get_session, owner_id, meeting_id)
         if not session:
             raise ValueError(f"Meeting session {meeting_id} not found.")
 
         if meeting_id in self._active_coordinators:
             return self._active_coordinators[meeting_id]
 
-        coordinator = MeetingEngineCoordinator(
+        coordinator = await asyncio.to_thread(
+            MeetingEngineCoordinator,
             session=session,
             bot_provider=self.bot_provider,
         )
         self._active_coordinators[meeting_id] = coordinator
 
         # Start the coordinator (joins call and delivers opening salvo)
-        await coordinator.start()
-        self.store.save_session(session)
+        try:
+            await coordinator.start()
+        except BaseException:
+            self._active_coordinators.pop(meeting_id, None)
+            raise
+        await asyncio.to_thread(self.store.save_session, session)
         return coordinator
 
-    async def stop_meeting(self, meeting_id: str) -> Dict[str, Any]:
+    async def stop_meeting(self, owner_id: str, meeting_id: str) -> Dict[str, Any]:
         """Conclude active Google Meet call and retrieve the finalized debrief report."""
+        session = await asyncio.to_thread(self.store.get_session, owner_id, meeting_id)
+        if not session:
+            raise ValueError(f"Meeting session {meeting_id} not found.")
         coordinator = self._active_coordinators.pop(meeting_id, None)
         if coordinator:
             report = await coordinator.stop()
-            self.store.save_session(coordinator.session)
+            await asyncio.to_thread(self.store.save_session, coordinator.session)
             return report
-
-        session = self.store.get_session(meeting_id)
-        if not session:
-            raise ValueError(f"Meeting session {meeting_id} not found.")
 
         if session.debrief_report:
             return session.debrief_report
 
         raise ValueError(f"Meeting {meeting_id} is not actively running and has no debrief.")
 
-    def get_coordinator(self, meeting_id: str) -> Optional[MeetingEngineCoordinator]:
+    def get_coordinator(self, owner_id: str, meeting_id: str) -> Optional[MeetingEngineCoordinator]:
+        if not self.get_session(owner_id, meeting_id):
+            return None
         return self._active_coordinators.get(meeting_id)
 
-    def get_session(self, meeting_id: str) -> Optional[MeetingSession]:
-        return self.store.get_session(meeting_id)
+    def get_session(self, owner_id: str, meeting_id: str) -> Optional[MeetingSession]:
+        return self.store.get_session(owner_id, meeting_id)
 
-    def list_sessions(self) -> List[MeetingSession]:
-        return self.store.list_sessions()
+    def list_sessions(self, owner_id: str) -> List[MeetingSession]:
+        return self.store.list_sessions(owner_id)
+
+    def find_session_by_bot(self, owner_id: str, bot_id: str) -> Optional[MeetingSession]:
+        return next(
+            (session for session in self.list_sessions(owner_id) if session.recall_bot_id == bot_id),
+            None,
+        )
 
 
 _SCHEDULER_INSTANCE: Optional[MeetingScheduler] = None

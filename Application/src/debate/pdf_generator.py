@@ -121,21 +121,29 @@ def generate_executive_pdf(report: Dict[str, Any]) -> bytes:
 
     # 2. Key Metrics Bar (Table with border boxes)
     metrics = report.get("metrics", {})
-    composure = report.get("overall_score", metrics.get("composure_score", 100))
-    wpm = metrics.get("current_wpm", 145)
-    fillers = metrics.get("filler_word_count", 0)
+    score = report.get("overall_score")
+    composure = metrics.get("composure_score")
+    wpm = metrics.get("current_wpm")
+    fillers = metrics.get("filler_word_count")
     barge_ins = metrics.get("barge_ins", 0)
-    turns = metrics.get("turns_count", report.get("rounds_completed", 1))
+    turns = metrics.get("turns_count", report.get("rounds_completed", 0))
+
+    score_value = "Not scored" if score is None else f"{score}/100"
+    composure_value = "—" if composure is None else f"{composure}/100"
+    cadence_value = "—" if wpm is None else f"{wpm} WPM"
+    filler_value = "—" if fillers is None else fillers
 
     metric_data = [
         [
-            Paragraph(f"{composure}%", stat_val_style),
-            Paragraph(f"{wpm} WPM", stat_val_style),
-            Paragraph(f"{fillers}", stat_val_style),
+            Paragraph(score_value, stat_val_style),
+            Paragraph(composure_value, stat_val_style),
+            Paragraph(cadence_value, stat_val_style),
+            Paragraph(f"{filler_value}", stat_val_style),
             Paragraph(f"{barge_ins}", stat_val_style),
             Paragraph(f"{turns}", stat_val_style),
         ],
         [
+            Paragraph("PERFORMANCE SCORE", stat_lbl_style),
             Paragraph("COMPOSURE", stat_lbl_style),
             Paragraph("CADENCE", stat_lbl_style),
             Paragraph("FILLER WORDS", stat_lbl_style),
@@ -143,7 +151,7 @@ def generate_executive_pdf(report: Dict[str, Any]) -> bytes:
             Paragraph("ROUNDS COMPLETED", stat_lbl_style),
         ],
     ]
-    metric_table = Table(metric_data, colWidths=[108, 108, 108, 108, 108])
+    metric_table = Table(metric_data, colWidths=[90, 90, 90, 90, 90, 90])
     metric_table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#f4f4f5")),
         ("BOX", (0, 0), (-1, -1), 0.5, colors.HexColor("#e4e4e7")),

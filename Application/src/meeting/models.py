@@ -42,7 +42,12 @@ class MeetingConfig:
 
 @dataclass
 class MeetingSession:
-    meeting_id: str = field(default_factory=lambda: str(uuid.uuid4())[:8])
+    meeting_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    owner_id: Optional[str] = None
+    recall_bot_id: Optional[str] = None
+    recall_status: Optional[str] = None
+    recall_status_message: Optional[str] = None
+    recall_status_updated_at: Optional[float] = None
     meet_url: str = ""
     context_id: Optional[str] = None
     context_filename: Optional[str] = None
@@ -61,8 +66,8 @@ class MeetingSession:
     provider_mode: str = "mock"
     provider_notice: Optional[str] = "Local simulation channel; no external meeting bot is connected."
 
-    def to_dict(self) -> Dict[str, Any]:
-        return {
+    def to_dict(self, *, include_owner: bool = False) -> Dict[str, Any]:
+        data = {
             "meeting_id": self.meeting_id,
             "meet_url": self.meet_url,
             "context_id": self.context_id,
@@ -82,7 +87,14 @@ class MeetingSession:
             "error_message": self.error_message,
             "provider_mode": self.provider_mode,
             "provider_notice": self.provider_notice,
+            "recall_bot_id": self.recall_bot_id,
+            "recall_status": self.recall_status,
+            "recall_status_message": self.recall_status_message,
+            "recall_status_updated_at": self.recall_status_updated_at,
         }
+        if include_owner:
+            data["owner_id"] = self.owner_id
+        return data
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> MeetingSession:
@@ -94,7 +106,12 @@ class MeetingSession:
             status_enum = MeetingStatus.SCHEDULED
 
         return cls(
-            meeting_id=data.get("meeting_id", str(uuid.uuid4())[:8]),
+            meeting_id=data.get("meeting_id", str(uuid.uuid4())),
+            owner_id=data.get("owner_id"),
+            recall_bot_id=data.get("recall_bot_id"),
+            recall_status=data.get("recall_status"),
+            recall_status_message=data.get("recall_status_message"),
+            recall_status_updated_at=data.get("recall_status_updated_at"),
             meet_url=data.get("meet_url", ""),
             context_id=data.get("context_id"),
             context_filename=data.get("context_filename"),

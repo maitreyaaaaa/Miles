@@ -71,7 +71,9 @@ def test_debrief_report():
     assert report["type"] == "debate_report"
     assert report["scenario"] == "custom_debate"
     assert report["topic"] == "Artificial Intelligence"
-    assert report["overall_score"] > 0
+    assert report["overall_score"] is None
+    assert report["assessment_method"] == "heuristic"
+    assert report["metrics"]["composure_score"] > 0
     assert len(report["coaching_tips"]) > 0
 
 
@@ -124,13 +126,15 @@ def test_debrief_2_bookmarks_and_chapters():
     assert "bookmarks" in report
     assert len(report["bookmarks"]) >= 3
     assert "chapters" in report
-    assert len(report["chapters"]) >= 1
+    # The synchronous fallback is rule-based and does not invent chapter scores or answer reviews.
+    assert report["chapters"] == []
     assert "weakest_answer" in report
-    assert "quote" in report["weakest_answer"]
+    assert report["weakest_answer"] is None
     assert "strongest_answer" in report
-    assert "quote" in report["strongest_answer"]
+    assert report["strongest_answer"] is None
     assert "executive_reframes" in report
-    assert len(report["executive_reframes"]) >= 1
+    assert report["executive_reframes"] == []
+    assert report["metrics"]["filler_word_count"] == 1
 
 
 def test_record_micro_hesitation_bookmark():
@@ -184,5 +188,3 @@ def test_dossier_defensive_difficulty():
     assert dossier["topic"] == "Autonomous Agents"
     assert len(dossier["attack_vectors"]) == 5
     assert len(dossier["trap_questions"]) == 3
-
-

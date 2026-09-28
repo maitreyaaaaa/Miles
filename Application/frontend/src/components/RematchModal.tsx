@@ -15,6 +15,8 @@ import {
   Zap,
 } from "lucide-react";
 import type { RematchConfig, RematchEvaluationResult } from "../types";
+import { apiFetch } from "../api";
+import { useAccessibleDialog } from "../hooks/useAccessibleDialog";
 
 declare global {
   interface Window {
@@ -56,6 +58,18 @@ export const RematchModal: React.FC<RematchModalProps> = ({
   const activeAudioRef = useRef<HTMLAudioElement | null>(null);
   const recognitionRef = useRef<any>(null);
   const timerIntervalRef = useRef<number | null>(null);
+  const userTextRef = useRef("");
+  const timeLeftRef = useRef(30.0);
+  const retryStartedAtRef = useRef(0);
+  const evaluationInProgressRef = useRef(false);
+
+  const handleModalClose = () => {
+    stopAudio();
+    stopMic();
+    clearTimer();
+    onClose();
+  };
+  const dialogRef = useAccessibleDialog<HTMLDivElement>(isOpen, handleModalClose);
 
   const stopAudio = useCallback(() => {
     if (activeAudioRef.current) {
@@ -103,7 +117,11 @@ export const RematchModal: React.FC<RematchModalProps> = ({
     if (!isOpen || !config) return;
     setStage("adversary_salvo");
     setTimeLeft(30.0);
+    timeLeftRef.current = 30.0;
+    retryStartedAtRef.current = performance.now();
     setUserText("");
+    userTextRef.current = "";
+    evaluationInProgressRef.current = false;
     setEvaluation(null);
     setErrorMessage(null);
     stopAudio();
@@ -114,31 +132,13 @@ export const RematchModal: React.FC<RematchModalProps> = ({
     void playAdversaryTrap();
   }, [config, isOpen]);
 
-  // Handle Escape key
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && isOpen) {
-        handleModalClose();
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isOpen]);
-
-  const handleModalClose = () => {
-    stopAudio();
-    stopMic();
-    clearTimer();
-    onClose();
-  };
-
   const playAdversaryTrap = async () => {
     if (!config) return;
     stopAudio();
     setIsAdversaryPlaying(true);
 
     try {
-      const res = await fetch(`${backendUrl}/api/tts/synthesize`, {
+      const res = await apiFetch(`${backendUrl}/api/tts/synthesize`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -173,21 +173,22 @@ export const RematchModal: React.FC<RematchModalProps> = ({
     stopAudio();
     setStage("user_retry");
     setTimeLeft(30.0);
+    timeLeftRef.current = 30.0;
     setUserText("");
+    userTextRef.current = "";
+    evaluationInProgressRef.current = false;
     setErrorMessage(null);
 
     // Start 30s countdown timer
     clearTimer();
     timerIntervalRef.current = window.setInterval(() => {
-      setTimeLeft((prev) => {
-        if (prev <= 0.1) {
-          clearTimer();
-          // Auto-submit when time expires
-          void triggerEvaluation();
-          return 0;
-        }
-        return Math.max(0, Math.round((prev - 0.1) * 10) / 10);
-      });
+      const nextTimeLeft = Math.max(0, Math.round((timeLeftRef.current - 0.1) * 10) / 10);
+      timeLeftRef.current = nextTimeLeft;
+      setTimeLeft(nextTimeLeft);
+      if (nextTimeLeft === 0) {
+        clearTimer();
+        void triggerEvaluation(userTextRef.current, 30);
+      }
     }, 100);
 
     // Initialize speech recognition if supported
@@ -218,6 +219,7 @@ export const RematchModal: React.FC<RematchModalProps> = ({
           transcript += event.results[i][0].transcript;
         }
         if (transcript.trim()) {
+          userTextRef.current = transcript.trim();
           setUserText(transcript.trim());
         }
       };
@@ -225,6 +227,9 @@ export const RematchModal: React.FC<RematchModalProps> = ({
       recognition.onerror = (event: any) => {
         console.warn("[Rematch] Speech recognition error:", event.error);
         setIsMicListening(false);
+        setErrorMessage(event.error === "not-allowed" || event.error === "service-not-allowed"
+          ? "Microphone permission was denied. Allow access or type your response instead."
+          : "Speech recognition stopped. Type your response or restart the microphone.");
       };
 
       recognition.onend = () => {
@@ -236,6 +241,7 @@ export const RematchModal: React.FC<RematchModalProps> = ({
     } catch (e) {
       console.warn("[Rematch] Could not start speech recognition:", e);
       setIsMicListening(false);
+      setErrorMessage("Could not start speech recognition. Type your response or check microphone access.");
     }
   };
 
@@ -247,25 +253,27 @@ export const RematchModal: React.FC<RematchModalProps> = ({
     }
   };
 
-  const triggerEvaluation = async () => {
+  const triggerEvaluation = async (answerText = userTextRef.current, elapsedOverride?: number) => {
+    if (evaluationInProgressRef.current) return;
     clearTimer();
     stopMic();
 
-    const answer = userText.trim();
+    const answer = answerText.trim();
     if (!answer) {
       setErrorMessage("Please speak or enter your upgraded response to complete the rematch.");
       return;
     }
 
+    evaluationInProgressRef.current = true;
     setStage("evaluating");
     setErrorMessage(null);
 
-    const elapsed = Math.max(2.0, 30.0 - timeLeft);
+    const elapsed = elapsedOverride ?? Math.min(30, Math.max(0.1, (performance.now() - retryStartedAtRef.current) / 1000));
     const words = answer.split(/\s+/).filter(Boolean).length;
     const wpm = (words / elapsed) * 60;
 
     try {
-      const res = await fetch(`${backendUrl}/api/debate/rematch/evaluate`, {
+      const res = await apiFetch(`${backendUrl}/api/debate/rematch/evaluate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -275,7 +283,6 @@ export const RematchModal: React.FC<RematchModalProps> = ({
           original_quote: config?.originalQuote || "",
           upgraded_answer: answer,
           duration_seconds: elapsed,
-          original_score: config?.originalScore || 55,
           wpm: Math.round(wpm),
         }),
       });
@@ -291,6 +298,7 @@ export const RematchModal: React.FC<RematchModalProps> = ({
       console.error("[Rematch] Evaluation failed:", err);
       setErrorMessage("Evaluation failed. Please try again.");
       setStage("user_retry");
+      evaluationInProgressRef.current = false;
     }
   };
 
@@ -315,10 +323,12 @@ export const RematchModal: React.FC<RematchModalProps> = ({
 
   return (
     <div
+      ref={dialogRef}
       className="modal-backdrop rematch-backdrop"
       role="dialog"
       aria-modal="true"
-      aria-label="Rematch This Exchange"
+      aria-labelledby="rematch-modal-title"
+      tabIndex={-1}
     >
       <section className="rematch-arena-modal">
         {/* Top Header Bar */}
@@ -328,7 +338,7 @@ export const RematchModal: React.FC<RematchModalProps> = ({
               <Flame size={14} className="text-amber-500" />
               <span>Rematch Arena</span>
             </div>
-            <span className="rematch-header-title">30-Second Rapid-Fire Retry</span>
+            <span id="rematch-modal-title" className="rematch-header-title">30-Second Rapid-Fire Retry</span>
           </div>
 
           <div className="rematch-header-right">
@@ -340,6 +350,7 @@ export const RematchModal: React.FC<RematchModalProps> = ({
               className="rematch-close-btn"
               onClick={handleModalClose}
               title="Close Rematch (Esc)"
+              aria-label="Close retry dialog"
             >
               <X size={16} />
             </button>
@@ -393,7 +404,7 @@ export const RematchModal: React.FC<RematchModalProps> = ({
               {/* Action to enter ring */}
               <div className="salvo-footer-actions">
                 <p className="salvo-instruction">
-                  You have <strong>30 seconds</strong> to deliver your upgraded answer directly into the microphone.
+                  You have <strong>30 seconds</strong> to speak your upgraded answer or type it below.
                 </p>
                 <button
                   type="button"
@@ -428,7 +439,7 @@ export const RematchModal: React.FC<RematchModalProps> = ({
                     <strong>{wordCount}</strong> words
                   </span>
                   <span className="telemetry-chip">
-                    <strong>{liveWpm}</strong> WPM
+                    <strong>{liveWpm}</strong> estimated WPM
                   </span>
                   <span className={`telemetry-chip ${detectedFillers.length > 0 ? "warn" : "clean"}`}>
                     {detectedFillers.length > 0
@@ -465,7 +476,10 @@ export const RematchModal: React.FC<RematchModalProps> = ({
                 <textarea
                   className="retry-textarea"
                   value={userText}
-                  onChange={(e) => setUserText(e.target.value)}
+                  onChange={(e) => {
+                    userTextRef.current = e.target.value;
+                    setUserText(e.target.value);
+                  }}
                   placeholder="Speak your commanding answer (or type to refine)..."
                   rows={4}
                   autoFocus
@@ -504,7 +518,7 @@ export const RematchModal: React.FC<RematchModalProps> = ({
                 <button
                   type="button"
                   className="retry-submit-btn"
-                  onClick={triggerEvaluation}
+                  onClick={() => void triggerEvaluation()}
                   disabled={!userText.trim()}
                 >
                   <span>Submit Upgraded Delivery</span>
@@ -520,7 +534,7 @@ export const RematchModal: React.FC<RematchModalProps> = ({
               <div className="evaluating-spinner" />
               <h3>Scoring Upgraded Delivery</h3>
               <p className="eval-subtext">
-                Analyzing filler reduction, speech cadence, and adversarial concession...
+                Checking your response, detected fillers, and estimated delivery pace...
               </p>
             </div>
           )}
@@ -528,14 +542,14 @@ export const RematchModal: React.FC<RematchModalProps> = ({
           {/* Phase 4: Victory & Scorecard Upgrade */}
           {stage === "victory_summary" && evaluation && (
             <div className="rematch-stage-box summary">
-              {/* Delta Header Pill */}
+              {/* Standalone retry assessment */}
               <div className="delta-victory-header">
                 <div className="delta-pill-wrap">
-                  <span className={`delta-score-pill ${evaluation.delta_score >= 0 ? "positive" : "negative"}`}>
-                    {evaluation.delta_score >= 0 ? `▲ +${evaluation.delta_score}` : `▼ ${evaluation.delta_score}`} Points!
+                  <span className="delta-score-pill positive">
+                    Retry score · {evaluation.new_score}/100
                   </span>
                   <span className="delta-score-range">
-                    {evaluation.original_score}% → <strong>{evaluation.new_score}%</strong> Composure
+                    {evaluation.assessment_method === "ai" ? "AI estimate" : "Rule-based estimate"}
                   </span>
                 </div>
                 <div className="delta-verdict-tag">
@@ -546,39 +560,40 @@ export const RematchModal: React.FC<RematchModalProps> = ({
 
               {/* Side-by-Side Delivery Comparison Grid */}
               <div className="comparison-columns-grid">
-                {/* Previous Faltered Attempt */}
-                <div className="comparison-col faltered">
+                {/* Original answer */}
+                <div className={`comparison-col faltered ${config.originalQuote ? "" : "comparison-unavailable"}`}>
                   <div className="comparison-head">
-                    <span className="comparison-label red">First Attempt (Weak Moment)</span>
-                    <span className="comparison-score-pill">{evaluation.original_score}%</span>
+                    <span className="comparison-label red">{config.originalQuote ? "Original Answer" : "Original Metrics"}</span>
                   </div>
-                  <blockquote className="comparison-quote">
-                    "{config.originalQuote}"
-                  </blockquote>
-                  <div className="comparison-stats">
-                    <span>{evaluation.fillers_before} Fillers</span>
-                    <span>•</span>
-                    <span>Hesitant Pacing</span>
-                  </div>
+                  {config.originalQuote ? (
+                    <>
+                      <blockquote className="comparison-quote">"{config.originalQuote}"</blockquote>
+                      <div className="comparison-stats">
+                        <span>{evaluation.fillers_before} detected filler{evaluation.fillers_before === 1 ? "" : "s"}</span>
+                      </div>
+                    </>
+                  ) : (
+                    <p className="comparison-quote">No original answer was captured for this moment. The retry is scored on its own.</p>
+                  )}
                 </div>
 
                 <div className="comparison-arrow-col">
                   <ArrowRight size={18} />
                 </div>
 
-                {/* Upgraded Rematch Attempt */}
+                {/* Retry attempt */}
                 <div className="comparison-col upgraded">
                   <div className="comparison-head">
-                    <span className="comparison-label green">Rematch Delivery (Upgraded)</span>
-                    <span className="comparison-score-pill green">{evaluation.new_score}%</span>
+                    <span className="comparison-label green">Retry Delivery</span>
+                    <span className="comparison-score-pill green">{evaluation.new_score}/100</span>
                   </div>
                   <blockquote className="comparison-quote upgraded">
                     "{userText}"
                   </blockquote>
                   <div className="comparison-stats green">
-                    <span>{evaluation.fillers_after} Fillers ({evaluation.fillers_before > evaluation.fillers_after ? `-${evaluation.fillers_before - evaluation.fillers_after}` : "Clean"})</span>
+                    <span>{evaluation.fillers_after} detected filler{evaluation.fillers_after === 1 ? "" : "s"}{config.originalQuote && evaluation.fillers_before > evaluation.fillers_after ? ` (down ${evaluation.fillers_before - evaluation.fillers_after})` : ""}</span>
                     <span>•</span>
-                    <span>{evaluation.cadence_wpm.toFixed(0)} WPM ({evaluation.pacing_verdict})</span>
+                    <span>Estimated {evaluation.cadence_wpm.toFixed(0)} WPM ({evaluation.pacing_verdict})</span>
                   </div>
                 </div>
               </div>
@@ -587,7 +602,7 @@ export const RematchModal: React.FC<RematchModalProps> = ({
               <div className="adversary-reaction-box">
                 <div className="reaction-header">
                   <Zap size={13} className="text-emerald-500" />
-                  <strong>Adversary Concession:</strong>
+                  <strong>Simulated Adversary Response:</strong>
                 </div>
                 <p className="reaction-text">{evaluation.adversary_reaction}</p>
                 <p className="tactical-note">{evaluation.tactical_analysis}</p>

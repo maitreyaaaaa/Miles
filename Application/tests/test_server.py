@@ -1,8 +1,15 @@
 import json
+import time
+from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
-from src.api.server import app, SESSIONS
+from src.api import server
+from src.api.server import app, SESSIONS, SESSION_OWNERS
 from src.debate.engine import DebateEngine
+from src.debate.llm_client import LLMClient
+from src.meeting.bridge_ticket import create_bridge_ticket
+from src.meeting.models import MeetingSession
+from src.meeting.scheduler import get_meeting_scheduler
 
 client = TestClient(app)
 
@@ -12,8 +19,8 @@ def test_health_endpoint():
     assert response.status_code == 200
     data = response.json()
     assert data["status"] == "healthy"
-    assert "active_providers" in data
-    assert "config" in data
+    assert "active_providers" not in data
+    assert "config" not in data
 
 
 def test_preflight_endpoint():
@@ -73,6 +80,7 @@ def test_session_report_endpoint():
     engine.start_debate()
     engine.record_user_turn("Our CAC is low.", duration_sec=2.0)
     SESSIONS[engine.session_id] = engine
+    SESSION_OWNERS[engine.session_id] = "00000000-0000-4000-8000-000000000001"
 
     response = client.get(f"/api/session/{engine.session_id}/report")
     assert response.status_code == 200
@@ -152,6 +160,191 @@ def test_websocket_debate_lifecycle():
                 break
 
         assert report_found, "Debate report not received after end_debate command"
+
+
+def test_meeting_bridge_websocket_authenticates_and_saves_debrief(monkeypatch):
+    owner_id = "00000000-0000-4000-8000-000000000001"
+    secret = "bridge-test-secret-" * 3
+    scheduler = get_meeting_scheduler()
+    session = MeetingSession(
+        owner_id=owner_id,
+        recall_bot_id="bot_bridge_test",
+        meet_url="https://meet.google.com/test-room-123",
+    )
+    scheduler.store.save_session(session)
+    ticket = create_bridge_ticket(
+        meeting_id=session.meeting_id,
+        owner_id=owner_id,
+        secret=secret,
+        expires_at=int(time.time()) + 300,
+    )
+    monkeypatch.setattr(server, "config", SimpleNamespace(
+        recall_audio_bridge_secret=secret,
+        assemblyai_api_key="",
+        sample_rate=16000,
+        rime_model_id="test",
+        tts_sample_rate=22050,
+        openai_model="test",
+        openai_api_key="",
+        gemini_model="test",
+        gemini_api_key="",
+    ))
+
+    real_debate_engine = server.DebateEngine
+
+    def make_mock_engine(**kwargs):
+        engine = real_debate_engine(**kwargs)
+        engine.llm_client = LLMClient(provider="mock")
+        return engine
+
+    class TestTTS:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def stream_audio_chunks(self, _text, **_kwargs):
+            yield b"\x00\x00"
+
+        def cancel(self):
+            pass
+
+        async def close(self):
+            pass
+
+    class TestSTT:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def connect(self):
+            return True
+
+        async def stop(self):
+            pass
+
+        async def send_audio_chunk(self, _chunk):
+            pass
+
+    leave_requests = []
+
+    class TestRecallService:
+        async def leave_call(self, bot_id):
+            leave_requests.append(bot_id)
+            return True
+
+    monkeypatch.setattr(server, "DebateEngine", make_mock_engine)
+    monkeypatch.setattr(server, "RimeStreamingTTSClient", TestTTS)
+    monkeypatch.setattr(server, "AssemblyAIStreamingClient", TestSTT)
+    monkeypatch.setattr(server, "RecallService", TestRecallService)
+
+    with client.websocket_connect("/ws/debate?meeting_bridge=true") as ws:
+        ws.send_text(json.dumps({"type": "meeting_bridge_auth", "ticket": ticket}))
+        bridge_ready = False
+        for _ in range(20):
+            message = _receive_event(ws)
+            if message.get("type") == "meeting_bridge_ready":
+                bridge_ready = True
+                break
+        assert bridge_ready
+        ws.send_text(json.dumps({"type": "meeting_bridge_audio_ready"}))
+        started = False
+        opening_received = False
+        for _ in range(20):
+            message = _receive_event(ws)
+            if message.get("type") == "meeting_bridge_started":
+                started = True
+            if message.get("type") == "transcript" and message.get("role") == "ai":
+                opening_received = True
+                break
+        assert started
+        assert opening_received
+        assert session.meeting_id in SESSIONS
+
+        ws.send_text(json.dumps({"type": "end_debate"}))
+        report_received = False
+        for _ in range(30):
+            message = _receive_event(ws)
+            if message.get("type") == "debate_report":
+                report_received = True
+                break
+        assert report_received
+
+    stored = scheduler.get_session(owner_id, session.meeting_id)
+    assert stored is not None
+    assert stored.debrief_report is not None
+    assert stored.status.value == "completed"
+    assert leave_requests == ["bot_bridge_test"]
+
+
+def test_meeting_bridge_fails_closed_when_speech_recognition_is_unavailable(monkeypatch):
+    owner_id = "00000000-0000-4000-8000-000000000001"
+    secret = "bridge-test-secret-" * 3
+    scheduler = get_meeting_scheduler()
+    session = MeetingSession(owner_id=owner_id, recall_bot_id="bot_bridge_failure")
+    scheduler.store.save_session(session)
+    ticket = create_bridge_ticket(
+        meeting_id=session.meeting_id,
+        owner_id=owner_id,
+        secret=secret,
+        expires_at=int(time.time()) + 300,
+    )
+    monkeypatch.setattr(server, "config", SimpleNamespace(
+        recall_audio_bridge_secret=secret,
+        assemblyai_api_key="test-assembly-key",
+        sample_rate=16000,
+        rime_model_id="test",
+        tts_sample_rate=22050,
+        openai_model="test",
+        openai_api_key="",
+        gemini_model="test",
+        gemini_api_key="",
+    ))
+
+    real_debate_engine = server.DebateEngine
+
+    def make_mock_engine(**kwargs):
+        engine = real_debate_engine(**kwargs)
+        engine.llm_client = LLMClient(provider="mock")
+        return engine
+
+    class TestTTS:
+        def __init__(self, **_kwargs):
+            pass
+
+        def cancel(self):
+            pass
+
+        async def close(self):
+            pass
+
+    class FailedSTT:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def connect(self):
+            return False
+
+        async def stop(self):
+            pass
+
+    class TestRecallService:
+        async def leave_call(self, bot_id):
+            assert bot_id == "bot_bridge_failure"
+            return True
+
+    monkeypatch.setattr(server, "DebateEngine", make_mock_engine)
+    monkeypatch.setattr(server, "RimeStreamingTTSClient", TestTTS)
+    monkeypatch.setattr(server, "AssemblyAIStreamingClient", FailedSTT)
+    monkeypatch.setattr(server, "RecallService", TestRecallService)
+
+    with client.websocket_connect("/ws/debate?meeting_bridge=true") as ws:
+        ws.send_text(json.dumps({"type": "meeting_bridge_auth", "ticket": ticket}))
+        error = _receive_event(ws)
+        assert error["type"] == "meeting_bridge_error"
+        assert "speech recognition" in error["message"]
+
+    stored = scheduler.get_session(owner_id, session.meeting_id)
+    assert stored is not None
+    assert stored.status.value == "failed"
+    assert session.meeting_id not in SESSIONS
 
 
 def test_websocket_barge_in_and_debrief_metrics():
@@ -297,14 +490,14 @@ def test_rematch_evaluate_endpoint():
         "original_quote": "Well, um, basically we are kinda growing, you know, sort of fast.",
         "upgraded_answer": "Our gross margin is eighty-four percent with a four-month CAC payback across two thousand accounts.",
         "duration_seconds": 12.0,
-        "original_score": 52,
     }
     resp = client.post("/api/debate/rematch/evaluate", json=payload)
     assert resp.status_code == 200
     data = resp.json()
     assert "new_score" in data
-    assert "delta_score" in data
-    assert data["delta_score"] > 0, "Commanding reframe should produce positive delta"
+    assert data["assessment_method"] in {"ai", "heuristic"}
+    assert "delta_score" not in data
+    assert "original_score" not in data
     assert data["fillers_before"] >= 3
     assert data["fillers_after"] == 0
     assert "adversary_reaction" in data
@@ -317,5 +510,3 @@ def test_rematch_evaluate_endpoint():
         "upgraded_answer": "   ",
     })
     assert bad_resp.status_code == 400
-
-

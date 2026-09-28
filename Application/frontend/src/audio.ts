@@ -1,3 +1,5 @@
+const CAPTURE_BUFFER_SIZE = 1024;
+
 export class VoicePlayer {
   private audioCtx: AudioContext;
   private activeNodes: AudioBufferSourceNode[] = [];
@@ -225,7 +227,8 @@ export class MicrophoneStreamer {
 
     this.audioContext = new AudioContext({ sampleRate: 16000 });
     this.source = this.audioContext.createMediaStreamSource(this.mediaStream);
-    this.processor = this.audioContext.createScriptProcessor(4096, 1, 1);
+    // 1024 samples are 64 ms at 16 kHz, keeping each browser audio frame short.
+    this.processor = this.audioContext.createScriptProcessor(CAPTURE_BUFFER_SIZE, 1, 1);
 
     this.processor.onaudioprocess = (event) => {
       if (websocket.readyState !== WebSocket.OPEN) return;

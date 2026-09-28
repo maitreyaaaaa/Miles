@@ -47,11 +47,12 @@ def test_safe_identifier_validators():
 def test_context_store_path_traversal_protection(tmp_path):
     """Verify ContextStore rejects traversal attempts on save and get."""
     store = ContextStore(storage_dir=tmp_path)
+    owner_id = "00000000-0000-4000-8000-000000000001"
 
     # 1. Traversal in context_id rejected on get
-    assert store.get_context("../evil") is None
-    assert store.get_context("..\\evil") is None
-    assert store.get_context("../../outside") is None
+    assert store.get_context(owner_id, "../evil") is None
+    assert store.get_context(owner_id, "..\\evil") is None
+    assert store.get_context(owner_id, "../../outside") is None
 
     # 2. Traversal in save_context raises ValueError
     dossier = ContextDossier(
@@ -63,38 +64,41 @@ def test_context_store_path_traversal_protection(tmp_path):
         target_role_or_company="",
     )
     with pytest.raises(ValueError, match="Invalid context_id"):
-        store.save_context(dossier)
+        store.save_context(owner_id, dossier)
 
 
 def test_meeting_store_path_traversal_protection(tmp_path):
     """Verify MeetingStore rejects unsafe meeting IDs."""
     data_file = tmp_path / "sessions.json"
     store = MeetingStore(data_file=data_file)
+    owner_id = "00000000-0000-4000-8000-000000000001"
 
-    assert store.get_session("../outside") is None
-    assert store.get_session("../../evil") is None
-    assert store.get_session("session/with/slashes") is None
+    assert store.get_session(owner_id, "../outside") is None
+    assert store.get_session(owner_id, "../../evil") is None
+    assert store.get_session(owner_id, "session/with/slashes") is None
 
     # Valid session saves cleanly
     session = MeetingSession(
         meeting_id="valid_session_1",
+        owner_id=owner_id,
         meet_url="https://meet.google.com/abc-defg-hij",
         persona_id="vc_pitch",
         difficulty="hard",
         config=MeetingConfig(audio_only=True),
     )
     store.save_session(session)
-    retrieved = store.get_session("valid_session_1")
+    retrieved = store.get_session(owner_id, "valid_session_1")
     assert retrieved is not None
     assert retrieved.meeting_id == "valid_session_1"
 
 
 def test_debrief_dispatcher_path_traversal_protection(tmp_path):
     """Verify DebriefDispatcher rejects unsafe meeting IDs."""
-    dispatcher = DebriefDispatcher(data_dir=tmp_path)
+    dispatcher = DebriefDispatcher()
+    owner_id = "00000000-0000-4000-8000-000000000001"
 
-    assert dispatcher.get_saved_debrief("../malicious") is None
-    assert dispatcher.get_saved_debrief("..\\malicious") is None
+    assert dispatcher.get_saved_debrief("../malicious", owner_id) is None
+    assert dispatcher.get_saved_debrief("..\\malicious", owner_id) is None
 
 
 def test_origin_validation():
@@ -102,14 +106,34 @@ def test_origin_validation():
     assert is_allowed_origin("http://localhost:5173")
     assert is_allowed_origin("http://localhost:3000")
     assert is_allowed_origin("http://127.0.0.1:5173")
-    assert is_allowed_origin("http://127.0.0.1:8000")
-    assert is_allowed_origin("http://localhost:8080")
+    assert not is_allowed_origin("http://127.0.0.1:8000")
+    assert not is_allowed_origin("http://localhost:8080")
     assert is_allowed_origin("")  # Non-browser or direct curl/script
 
     # Malicious external origins
     assert not is_allowed_origin("https://evil-hacker.com")
     assert not is_allowed_origin("http://malicious.site.io")
     assert not is_allowed_origin("https://phishing-miles.com")
+
+
+def test_context_store_isolates_the_same_context_id_by_owner(tmp_path):
+    store = ContextStore(storage_dir=tmp_path)
+    first_owner = "00000000-0000-4000-8000-000000000001"
+    second_owner = "00000000-0000-4000-8000-000000000002"
+    dossier = ContextDossier(
+        context_id="same_context_id",
+        filename="first.txt",
+        doc_type="general_doc",
+        title="Private first dossier",
+        executive_summary="First account only.",
+        target_role_or_company="",
+    )
+
+    store.save_context(first_owner, dossier)
+
+    assert store.get_context(first_owner, "same_context_id").title == "Private first dossier"
+    assert store.get_context(second_owner, "same_context_id") is None
+    assert store.list_contexts(second_owner) == []
 
 
 def test_upload_context_document_oversize_rejected():

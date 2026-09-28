@@ -1,6 +1,8 @@
 ﻿# Miles — AssemblyAI Hackathon Master Upgrade Blueprint
 
 > **Master Architecture, Specifications, and Implementation Roadmap**  
+>
+> Historical proposal, not the current roadmap or implementation checklist. Features may have changed or remained incomplete; use the code and [current repository overview](README.md) for verified status.
 > Unifying Full-Duplex Spoken Adversarial Sparring with AssemblyAI Audio Intelligence, High-Stakes Scenario Packs, and Training Replay Dynamics.
 
 ---

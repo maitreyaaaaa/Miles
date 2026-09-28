@@ -2,13 +2,14 @@ import pytest
 from fastapi.testclient import TestClient
 from src.api.server import app
 from src.debate.llm_client import LLMClient
+from src.meeting.provider import MockMeetingBotProvider
 from src.meeting.scheduler import get_meeting_scheduler
 
 client = TestClient(app)
 
 
 def test_generate_instant_link():
-    res = client.get("/api/meeting/generate-link")
+    res = client.post("/api/meeting/generate-link", json={})
     assert res.status_code == 200
     data = res.json()
     assert "meet_url" in data
@@ -41,7 +42,10 @@ def test_meeting_schedule_and_retrieve():
     assert any(m["meeting_id"] == meeting_id for m in meetings)
 
 
-def test_meeting_start_and_stop_lifecycle():
+def test_meeting_start_and_stop_lifecycle(monkeypatch):
+    scheduler = get_meeting_scheduler()
+    monkeypatch.setattr(scheduler, "bot_provider", MockMeetingBotProvider())
+
     # Schedule
     res = client.post("/api/meeting/schedule", json={"persona_id": "vc_pitch"})
     assert res.status_code == 200
@@ -55,8 +59,7 @@ def test_meeting_start_and_stop_lifecycle():
     assert "opening_statement" in start_data
 
     # Set mock LLM on active coordinator so stop generates report without real LLM key
-    scheduler = get_meeting_scheduler()
-    coordinator = scheduler.get_coordinator(meeting_id)
+    coordinator = scheduler.get_coordinator("00000000-0000-4000-8000-000000000001", meeting_id)
     if coordinator:
         coordinator.engine.llm_client = LLMClient(provider="mock")
 

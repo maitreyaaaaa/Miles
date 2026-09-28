@@ -5,7 +5,6 @@ import logging
 import uuid
 from typing import Any, Dict, Optional
 
-from src.config import config
 from src.meeting.scheduler import generate_meet_code
 
 logger = logging.getLogger(__name__)
@@ -24,20 +23,10 @@ class GoogleMeetProvisioner:
         if self.access_token:
             creds = Credentials(token=self.access_token)
             return build("calendar", "v3", credentials=creds, cache_discovery=False)
-        elif config.google_refresh_token and config.google_client_id and config.google_client_secret:
-            creds = Credentials(
-                token=None,
-                refresh_token=config.google_refresh_token,
-                token_uri="https://oauth2.googleapis.com/token",
-                client_id=config.google_client_id,
-                client_secret=config.google_client_secret,
-            )
-            return build("calendar", "v3", credentials=creds, cache_discovery=False)
         else:
             raise ValueError(
                 "Google Calendar API credentials missing. "
-                "Provide an access_token or configure GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, "
-                "and GOOGLE_REFRESH_TOKEN in .env."
+                "Connect a Google Calendar account before creating a real Meet link."
             )
 
     async def create_meeting_room(
@@ -49,7 +38,7 @@ class GoogleMeetProvisioner:
         import asyncio
         loop = asyncio.get_running_loop()
 
-        if self.access_token or (config.google_refresh_token and config.google_client_id):
+        if self.access_token:
             try:
                 return await loop.run_in_executor(None, self._sync_create_meeting, title, duration_minutes)
             except Exception as e:
@@ -62,8 +51,7 @@ class GoogleMeetProvisioner:
             "event_id": f"sim_{uuid.uuid4().hex[:10]}",
             "is_real_meet": False,
             "provider_notice": (
-                "Local simulation link generated. Configure GOOGLE_CLIENT_ID and "
-                "GOOGLE_CLIENT_SECRET in .env to provision live Google Calendar Meet rooms."
+                "Simulation link generated. Connect your Google Calendar to create a real Meet event."
             ),
         }
 

@@ -171,10 +171,13 @@ export type DebateReportEvent = {
   topic?: string;
   difficulty?: string;
   rounds_completed?: number;
-  overall_score: number;
+  overall_score: number | null;
   verdict: string;
   verdict_description?: string;
-  metrics: Record<string, number | string | string[]>;
+  metrics: Record<string, number | string | string[] | null>;
+  assessment_status?: "complete" | "limited_data" | "insufficient_data";
+  assessment_method?: "ai" | "heuristic" | "none";
+  assessment_note?: string;
   key_weaknesses: string[];
   coaching_tips: string[];
   chapters?: DebateChapter[];
@@ -410,8 +413,11 @@ export interface MeetingSession {
   error_message?: string | null;
   provider_mode?: "mock" | "mock_fallback" | "headless" | "external" | "recall_ai" | string;
   provider_notice?: string | null;
-  recall_bot_id?: string | null;
-  scheduled_join_at?: string | null;
+    recall_bot_id?: string | null;
+    recall_status?: string | null;
+    recall_status_message?: string | null;
+    recall_status_updated_at?: number | null;
+    scheduled_join_at?: string | null;
 }
 
 export interface RematchConfig {
@@ -422,7 +428,6 @@ export interface RematchConfig {
   speaker: string;
   trap: string;
   originalQuote: string;
-  originalScore: number;
   targetReframe?: string;
   vulnerability?: string;
   sourceType: "weakest_answer" | "moment_replay" | "reframe";
@@ -430,8 +435,7 @@ export interface RematchConfig {
 
 export interface RematchEvaluationResult {
   new_score: number;
-  original_score: number;
-  delta_score: number;
+  assessment_method: "ai" | "heuristic";
   fillers_before: number;
   fillers_after: number;
   detected_fillers: string[];
@@ -441,5 +445,3 @@ export interface RematchEvaluationResult {
   adversary_reaction: string;
   tactical_analysis: string;
 }
-
-

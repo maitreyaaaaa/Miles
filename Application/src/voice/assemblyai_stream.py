@@ -64,7 +64,8 @@ class AssemblyAITurnEvent:
 class AssemblyAIStreamingClient:
     """Real-time Universal-Streaming v3 client for AssemblyAI.
     
-    Powers sub-200ms speech-to-text, partial transcripts, speech onset detection,
+    Provides partial and final transcripts plus speech-onset events when connected;
+    end-to-end latency depends on the browser, network, and provider response,
     word-level timestamps, micro-hesitations, vocabulary boosting, and composure intelligence.
     """
 

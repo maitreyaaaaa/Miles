@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import argparse
 import sys
 import time
 from pathlib import Path
@@ -76,10 +77,10 @@ async def _consume_stream_with_playback_simulation(
 
 async def main():
     print("=" * 70)
-    print("MILES — FULL-DUPLEX BARGE-IN LATENCY BENCHMARK")
-    print("DataForge Pathway x Rime Hackathon Verification Suite")
+    print("MILES — LOCAL TTS CANCELLATION RESPONSE BENCHMARK")
+    print("Simulated interruption; does not measure microphone-to-speaker latency")
     print("=" * 70)
-    print(f"Target Threshold: Sub-100.00 ms cut-off latency\n")
+    print("Cancellation handler sanity limit: 100.00 ms\n")
 
     trials = 10
     latencies = []
@@ -106,10 +107,17 @@ async def main():
     # Acceptance assertion
     assert avg_lat < 100.0, f"Benchmark FAILED: Average latency {avg_lat:.2f}ms exceeds 100ms limit!"
     print("\n[VERDICT: PASSED]")
-    print("Barge-in cut-off operates well within the 100ms human conversational threshold.")
-    print("Ready for submission evidence recording.")
+    print("Software cancellation completed within the configured threshold.")
     print("=" * 70)
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Measure local TTS cancellation response.")
+    parser.add_argument(
+        "--live",
+        action="store_true",
+        help="allow requests to the configured TTS provider (may use provider quota)",
+    )
+    if not parser.parse_args().live:
+        parser.error("this benchmark may use a live TTS provider; pass --live to continue")
     asyncio.run(main())

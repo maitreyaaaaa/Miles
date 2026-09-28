@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="referrer" content="no-referrer" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>Miles meeting audio</title>
+    <style>
+      :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+      * { box-sizing: border-box; }
+      body { margin: 0; width: 100vw; height: 100vh; display: grid; place-items: center; color: #f2f3eb; background: #11130e; }
+      main { display: flex; align-items: center; gap: 30px; width: min(78vw, 850px); padding: 48px; border: 1px solid #373b31; border-radius: 30px; background: linear-gradient(135deg, #1b1e17, #11130e 72%); }
+      .mark { display: grid; place-items: center; width: 116px; aspect-ratio: 1; flex: none; border-radius: 50%; color: #11130e; background: #c6f432; font-size: 62px; font-weight: 750; letter-spacing: -0.08em; }
+      .eyebrow { margin: 0 0 12px; color: #c6f432; font-size: 14px; font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase; }
+      h1 { margin: 0; font-size: clamp(34px, 5vw, 58px); font-weight: 600; letter-spacing: -0.04em; }
+      #status { margin: 14px 0 0; color: #a6aa9a; font-size: 19px; }
+      @media (max-width: 560px) { main { gap: 18px; padding: 28px; } .mark { width: 72px; font-size: 40px; } #status { font-size: 15px; } }
+    </style>
+  </head>
+  <body>
+    <main aria-live="polite">
+      <div class="mark" aria-hidden="true">M</div>
+      <div>
+        <p class="eyebrow">Miles voice agent</p>
+        <h1>Here to spar.</h1>
+        <p id="status">Connecting securely…</p>
+      </div>
+    </main>
+    <script type="module" src="/src/meeting-bridge.ts"></script>
+  </body>
+</html>

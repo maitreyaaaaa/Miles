@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import json
 import logging
-from pathlib import Path
+import re
 from typing import Any, Dict, Optional
 
 from src.debate.engine import DebateEngine
@@ -10,89 +9,55 @@ from src.meeting.models import MeetingSession, MeetingStatus
 
 logger = logging.getLogger(__name__)
 
-DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "meetings"
-
-
-import re
-
 SAFE_ID_REGEX = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
 
 def is_safe_identifier(identifier: str) -> bool:
-    return bool(identifier and SAFE_ID_REGEX.match(identifier))
+    return isinstance(identifier, str) and bool(identifier and SAFE_ID_REGEX.match(identifier))
 
 
 class DebriefDispatcher:
     """Compiles, persists, and formats post-meeting debrief reports."""
-
-    def __init__(self, data_dir: Optional[Path] = None):
-        self.data_dir = data_dir or DATA_DIR
-        self.data_dir.mkdir(parents=True, exist_ok=True)
 
     async def compile_and_save(
         self,
         session: MeetingSession,
         engine: DebateEngine,
     ) -> Dict[str, Any]:
-        """Generate debrief report from debate engine, persist to disk, and update session."""
+        """Generate a report and attach it to the meeting session for durable save."""
         logger.info(f"[DebriefDispatcher] Generating debrief report for meeting {session.meeting_id}...")
         report = await engine.generate_llm_debrief_report()
 
         session.debrief_report = report
         session.status = MeetingStatus.COMPLETED
 
-        if not is_safe_identifier(session.meeting_id):
-            logger.error(f"[DebriefDispatcher] Invalid meeting_id: {session.meeting_id}")
-            return report
-
-        # Persist report to data/meetings/{meeting_id}/debrief.json
-        meeting_dir = (self.data_dir / session.meeting_id).resolve()
-        if not meeting_dir.is_relative_to(self.data_dir.resolve()):
-            logger.error("[DebriefDispatcher] Path traversal detected.")
-            return report
-
-        meeting_dir.mkdir(parents=True, exist_ok=True)
-        report_file = meeting_dir / "debrief.json"
-
-        try:
-            with open(report_file, "w", encoding="utf-8") as f:
-                json.dump(report, f, indent=2)
-            logger.info(f"[DebriefDispatcher] Debrief report saved to {report_file}")
-        except Exception as e:
-            logger.error(f"[DebriefDispatcher] Failed to write debrief report: {e}", exc_info=True)
-
         return report
 
-    def get_saved_debrief(self, meeting_id: str) -> Optional[Dict[str, Any]]:
-        """Retrieve persisted debrief report for a given meeting safely."""
+    def get_saved_debrief(self, meeting_id: str, owner_id: str) -> Optional[Dict[str, Any]]:
+        """Load a meeting report through its owner-scoped persistent record."""
         if not is_safe_identifier(meeting_id):
-            logger.warning(f"[DebriefDispatcher] Rejected unsafe meeting_id: {meeting_id}")
-            return None
-
-        meeting_dir = (self.data_dir / meeting_id).resolve()
-        if not meeting_dir.is_relative_to(self.data_dir.resolve()):
-            logger.warning(f"[DebriefDispatcher] Path traversal detected: {meeting_id}")
-            return None
-
-        report_file = meeting_dir / "debrief.json"
-        if not report_file.exists():
+            logger.warning("[DebriefDispatcher] Rejected unsafe meeting_id.")
             return None
         try:
-            with open(report_file, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception as e:
-            logger.error(f"[DebriefDispatcher] Error reading debrief {meeting_id}: {e}")
+            from src.meeting.store import get_meeting_store
+
+            session = get_meeting_store().get_session(owner_id, meeting_id)
+        except (TypeError, ValueError):
             return None
+        return session.debrief_report if session else None
 
     def format_html_summary(self, session: MeetingSession) -> str:
         """Format a clean, responsive HTML summary for email delivery or quick view."""
         report = session.debrief_report or {}
         summary = report.get("executive_summary", "No summary available.")
-        overall_score = report.get("overall_score", 0)
-        composure = report.get("composure_rating", 0)
-        persuasion = report.get("persuasion_rating", 0)
+        overall_score = report.get("overall_score")
+        composure = report.get("composure_rating")
+        persuasion = report.get("persuasion_rating")
         gt_audit = report.get("ground_truth_audit") or {}
-        factual_score = gt_audit.get("factual_accuracy_score", 100)
+        factual_score = gt_audit.get("factual_accuracy_score")
+
+        def display_score(value, suffix=""):
+            return f"{value}{suffix}" if isinstance(value, (int, float)) else "Not scored"
 
         html = f"""<!DOCTYPE html>
 <html>
@@ -117,13 +82,13 @@ class DebriefDispatcher:
       <p style="color: #94a3b8; font-size: 12px;">Meeting ID: {session.meeting_id} | Persona: {session.persona_id}</p>
     </div>
     <div style="text-align: center;">
-      <div class="score">{overall_score}<span style="font-size: 18px; color: #94a3b8;">/100</span></div>
+      <div class="score">{display_score(overall_score, "/100")}</div>
       <div style="color: #94a3b8; font-size: 12px;">Overall Sparring Score</div>
     </div>
     <div class="metrics">
-      <div class="metric"><div class="metric-val">{composure}/100</div><div class="metric-lbl">Composure</div></div>
-      <div class="metric"><div class="metric-val">{persuasion}/100</div><div class="metric-lbl">Persuasion</div></div>
-      <div class="metric"><div class="metric-val">{factual_score}%</div><div class="metric-lbl">Factual Accuracy</div></div>
+      <div class="metric"><div class="metric-val">{display_score(composure, "/100")}</div><div class="metric-lbl">Composure</div></div>
+      <div class="metric"><div class="metric-val">{display_score(persuasion, "/100")}</div><div class="metric-lbl">Persuasion</div></div>
+      <div class="metric"><div class="metric-val">{display_score(factual_score, "%")}</div><div class="metric-lbl">Factual Accuracy</div></div>
     </div>
     <div class="summary">
       <h4>Executive Assessment</h4>

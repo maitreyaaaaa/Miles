@@ -22,17 +22,16 @@ import {
   Volume2,
   X,
 } from "lucide-react";
-import type { DebateReportEvent, RematchConfig, RematchEvaluationResult, TelemetryEvent } from "../types";
+import type { DebateReportEvent, RematchConfig, RematchEvaluationResult } from "../types";
 import type { RecordedTurnAudio } from "../audio";
 import { MomentReplay } from "./MomentReplay";
 import { RematchModal } from "./RematchModal";
 import CountUp from "./CountUp";
+import { apiFetch } from "../api";
+import { useAccessibleDialog } from "../hooks/useAccessibleDialog";
 
 interface DebriefModalProps {
   report: DebateReportEvent;
-  telemetry: TelemetryEvent;
-  transcriptCount: number;
-  interruptions: number;
   onClose: () => void;
   recordedUserTurns?: RecordedTurnAudio[];
   speaker?: string;
@@ -45,46 +44,20 @@ function findMatchingTurnAudio(
 ): RecordedTurnAudio | null {
   if (!turns || turns.length === 0) return null;
   const cleanQ = quote.toLowerCase().replace(/[^\w\s]/g, "").trim();
-  if (!cleanQ) return turns[0] ?? null;
+  if (!cleanQ || cleanQ.split(/\s+/).length < 3) return null;
 
   // 1. Direct substring inclusion or exact match
   for (const t of turns) {
     const cleanT = t.transcript.toLowerCase().replace(/[^\w\s]/g, "").trim();
-    if (cleanT.includes(cleanQ) || cleanQ.includes(cleanT)) {
+    if (cleanT.includes(cleanQ)) {
       return t;
     }
   }
-
-  // 2. Token overlap heuristic
-  const qWords = new Set(cleanQ.split(/\s+/).filter((w) => w.length > 2));
-  if (qWords.size > 0) {
-    let bestTurn: RecordedTurnAudio | null = null;
-    let bestScore = 0;
-    for (const t of turns) {
-      const cleanT = t.transcript.toLowerCase().replace(/[^\w\s]/g, "").trim();
-      const tWords = cleanT.split(/\s+/);
-      let matchCount = 0;
-      for (const w of tWords) {
-        if (qWords.has(w)) matchCount++;
-      }
-      const score = matchCount / qWords.size;
-      if (score > bestScore && score >= 0.25) {
-        bestScore = score;
-        bestTurn = t;
-      }
-    }
-    if (bestTurn) return bestTurn;
-  }
-
-  // 3. Fallback: return first recorded turn
-  return turns[0] ?? null;
+  return null;
 }
 
 export const DebriefModal: React.FC<DebriefModalProps> = ({
   report,
-  telemetry,
-  transcriptCount,
-  interruptions,
   onClose,
   recordedUserTurns = [],
   speaker = "alpine",
@@ -97,17 +70,19 @@ export const DebriefModal: React.FC<DebriefModalProps> = ({
   // Rematch State
   const [rematchConfig, setRematchConfig] = useState<RematchConfig | null>(null);
   const [upgradedMoments, setUpgradedMoments] = useState<Set<string>>(new Set());
-  const [rematchDeltas, setRematchDeltas] = useState<Map<string, RematchEvaluationResult>>(new Map());
-  const [overallScore, setOverallScore] = useState<number>(Math.round(report.overall_score));
+  const [rematchResults, setRematchResults] = useState<Map<string, RematchEvaluationResult>>(new Map());
+  const overallScore = typeof report.overall_score === "number" ? Math.round(report.overall_score) : null;
 
   // Share & PDF Export State
   const [shareCopied, setShareCopied] = useState(false);
   const [sharing, setSharing] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const handleShareDebrief = async () => {
     try {
+      setActionError(null);
       setSharing(true);
-      const res = await fetch(`${backendUrl}/api/debrief/share`, {
+      const res = await apiFetch(`${backendUrl}/api/debrief/share`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ report }),
@@ -120,15 +95,36 @@ export const DebriefModal: React.FC<DebriefModalProps> = ({
       setTimeout(() => setShareCopied(false), 3500);
     } catch (err) {
       console.error("Error sharing debrief:", err);
+      setActionError("Could not create the share link. Check your connection and try again.");
     } finally {
       setSharing(false);
     }
   };
 
-  const handleExportPdf = () => {
-    const sessionId = report.session_id || report.share_id || "session";
+  const handleExportPdf = async () => {
+    setActionError(null);
+    const sessionId = report.session_id || report.share_id;
+    if (!sessionId) {
+      setActionError("This report has no session ID, so a PDF cannot be created.");
+      return;
+    }
     const pdfUrl = `${backendUrl}/api/debrief/${sessionId}/pdf`;
-    window.open(pdfUrl, "_blank");
+    const pdfTab = window.open("about:blank", "_blank");
+    if (!pdfTab) {
+      setActionError("Your browser blocked the PDF window. Allow pop-ups for this site and try again.");
+      return;
+    }
+    try {
+      const response = await apiFetch(pdfUrl);
+      if (!response.ok) throw new Error(`PDF export failed with HTTP ${response.status}`);
+      const objectUrl = URL.createObjectURL(await response.blob());
+      pdfTab.location.href = objectUrl;
+      window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+    } catch (error) {
+      pdfTab.close();
+      console.error("Failed to export the debrief PDF", error);
+      setActionError("Could not export the PDF. Check your connection and try again.");
+    }
   };
 
   const activeAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -151,6 +147,7 @@ export const DebriefModal: React.FC<DebriefModalProps> = ({
     stopAudio();
     onClose();
   }, [onClose, stopAudio]);
+  const dialogRef = useAccessibleDialog<HTMLDivElement>(true, handleClose, !rematchConfig);
 
   const handleStartWeakestRematch = useCallback(() => {
     if (!report.weakest_answer) return;
@@ -168,7 +165,6 @@ export const DebriefModal: React.FC<DebriefModalProps> = ({
       speaker: speaker || "alpine",
       trap,
       originalQuote: report.weakest_answer.quote,
-      originalScore: 52,
       targetReframe: report.weakest_answer.why_faltered,
       vulnerability: report.weakest_answer.vulnerability,
       sourceType: "weakest_answer",
@@ -185,8 +181,7 @@ export const DebriefModal: React.FC<DebriefModalProps> = ({
       opponent: "Adversary",
       speaker: speaker || "alpine",
       trap: `Hold on. ${trap}`,
-      originalQuote: bookmark.quote || "Our position holds up.",
-      originalScore: 55,
+      originalQuote: "",
       targetReframe: bookmark.reframe,
       vulnerability: bookmark.label,
       sourceType: "moment_replay",
@@ -203,7 +198,6 @@ export const DebriefModal: React.FC<DebriefModalProps> = ({
       speaker: speaker || "alpine",
       trap: `Hold on. Enough hand-waving on: "${rf.original_quote}". Give me the exact number or take it back.`,
       originalQuote: rf.original_quote,
-      originalScore: 58,
       targetReframe: rf.executive_reframe,
       vulnerability: rf.rationale,
       sourceType: "reframe",
@@ -212,22 +206,8 @@ export const DebriefModal: React.FC<DebriefModalProps> = ({
 
   const handleUpgradeAccepted = useCallback((cfg: RematchConfig, result: RematchEvaluationResult) => {
     setUpgradedMoments((prev) => new Set([...prev, cfg.id]));
-    setRematchDeltas((prev) => new Map(prev).set(cfg.id, result));
-    if (result.delta_score > 0) {
-      setOverallScore((prev) => Math.min(100, Math.round(prev + Math.max(2, result.delta_score * 0.2))));
-    }
+    setRematchResults((prev) => new Map(prev).set(cfg.id, result));
   }, []);
-
-  // Close on Escape key press
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        handleClose();
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [handleClose]);
 
   // Cleanup active audio and cached object URLs on unmount
   useEffect(() => {
@@ -290,7 +270,7 @@ export const DebriefModal: React.FC<DebriefModalProps> = ({
         setLoadingTrackId(trackId);
         try {
           const apiBase = backendUrl || "http://localhost:8000";
-          const res = await fetch(`${apiBase}/api/tts/synthesize`, {
+          const res = await apiFetch(`${apiBase}/api/tts/synthesize`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -337,27 +317,22 @@ export const DebriefModal: React.FC<DebriefModalProps> = ({
 
   const speakerLabel = speaker ? speaker.charAt(0).toUpperCase() + speaker.slice(1) : "Executive";
   const m = report.metrics || {};
-
-  const composureVal =
-    m.composure_score !== undefined
-      ? Math.round(Number(m.composure_score))
-      : Math.round(telemetry.composure_score);
-  const cadenceVal =
-    m.current_wpm !== undefined
-      ? Math.round(Number(m.current_wpm))
-      : Math.round(telemetry.current_wpm);
-  const fillersVal =
-    m.filler_word_count !== undefined ? Number(m.filler_word_count) : telemetry.filler_word_count;
-  const pressureVal =
-    m.pressure_level !== undefined ? `${m.pressure_level}/5` : `${telemetry.pressure_level}/5`;
-  const turnsVal = m.turns_count !== undefined ? Number(m.turns_count) : transcriptCount;
-  const bargeInsVal = m.barge_ins !== undefined ? Number(m.barge_ins) : interruptions;
+  const turnsVal = typeof m.turns_count === "number"
+    ? m.turns_count
+    : typeof report.rounds_completed === "number" ? report.rounds_completed : 0;
+  const composureVal = typeof m.composure_score === "number" ? Math.round(m.composure_score) : null;
+  const cadenceVal = typeof m.current_wpm === "number" ? Math.round(m.current_wpm) : null;
+  const fillersVal = typeof m.filler_word_count === "number" ? m.filler_word_count : null;
+  const pressureVal = typeof m.pressure_level === "number"
+    ? `${m.pressure_level}/5`
+    : "—";
+  const bargeInsVal = typeof m.barge_ins === "number" ? m.barge_ins : 0;
 
   const scoreMetrics = [
-    { label: "Overall Score", value: `${overallScore}/100`, highlight: true },
-    { label: "Composure Index", value: `${composureVal}/100` },
-    { label: "Cadence", value: `${cadenceVal} WPM` },
-    { label: "Fillers Detected", value: fillersVal.toString() },
+    { label: "AI Performance Assessment", value: overallScore === null ? "Not scored" : `${overallScore}/100`, highlight: true },
+    { label: "Composure Index", value: composureVal === null ? "—" : `${composureVal}/100` },
+    { label: "Cadence", value: cadenceVal === null ? "—" : `${cadenceVal} WPM` },
+    { label: "Fillers Detected", value: fillersVal === null ? "—" : fillersVal.toString() },
     { label: "Peak Pressure", value: pressureVal },
     { label: "Sparring Rounds", value: turnsVal.toString() },
     { label: "Barge-ins Seized", value: bargeInsVal.toString() },
@@ -369,10 +344,12 @@ export const DebriefModal: React.FC<DebriefModalProps> = ({
 
   return (
     <div
+      ref={dialogRef}
       className="debrief-fullscreen-wrapper"
       role="dialog"
       aria-modal="true"
-      aria-label="Executive Sparring Debrief"
+      aria-labelledby="debrief-report-title"
+      tabIndex={-1}
     >
       {/* Sticky Executive Top Bar */}
       <header className="debrief-fullscreen-topbar">
@@ -382,7 +359,7 @@ export const DebriefModal: React.FC<DebriefModalProps> = ({
             <span>Miles Executive Debrief</span>
           </div>
           <div className="debrief-topbar-title">
-            <h2>{report.verdict}</h2>
+            <h2 id="debrief-report-title">{report.verdict}</h2>
             {report.verdict_description && (
               <p className="debrief-topbar-desc">{report.verdict_description}</p>
             )}
@@ -410,8 +387,10 @@ export const DebriefModal: React.FC<DebriefModalProps> = ({
             <span>Export PDF</span>
           </button>
           <div className="debrief-score-pill">
-            <span className="score-pill-label">Performance</span>
-            <span className="score-pill-value"><CountUp to={overallScore} duration={1.2} />%</span>
+            <span className="score-pill-label">{overallScore === null ? "Not scored" : "AI assessment"}</span>
+            <span className="score-pill-value">
+              {overallScore === null ? "—" : <><CountUp to={overallScore} duration={1.2} />%</>}
+            </span>
           </div>
           <button
             type="button"
@@ -436,6 +415,12 @@ export const DebriefModal: React.FC<DebriefModalProps> = ({
       {/* Main Full-Screen Viewport Content */}
       <main className="debrief-fullscreen-content">
         <div className="debrief-content-container">
+          {actionError && <p className="debrief-action-error" role="alert">{actionError}</p>}
+          {report.assessment_note && (
+            <p className={`debrief-assessment-note ${report.assessment_status || ""}`} role="status">
+              {report.assessment_note}
+            </p>
+          )}
           {/* Executive Metrics Strip */}
           <section className="debrief-metrics-strip" aria-label="Executive Performance Metrics">
             {scoreMetrics.map((item) => (
@@ -705,8 +690,8 @@ export const DebriefModal: React.FC<DebriefModalProps> = ({
                   {report.weakest_answer && (() => {
                     const matchingWeakestTurn = findMatchingTurnAudio(report.weakest_answer.quote, recordedUserTurns);
                     const isWeakestPlaying = playingTrack?.id === "weakest-moment" && playingTrack.type === "user";
-                    const isWeakestOvercome = upgradedMoments.has("weakest_moment");
-                    const weakestDelta = rematchDeltas.get("weakest_moment");
+                    const wasRetried = upgradedMoments.has("weakest_moment");
+                    const weakestResult = rematchResults.get("weakest_moment");
 
                     return (
                       <div className="answer-card-pro faltered">
@@ -715,10 +700,10 @@ export const DebriefModal: React.FC<DebriefModalProps> = ({
                             <AlertCircle size={15} />
                             <span>Weakest Moment</span>
                           </div>
-                          {isWeakestOvercome && weakestDelta && (
+                          {wasRetried && weakestResult && (
                             <span className="rematch-conquered-pill">
                               <CheckCircle2 size={13} className="text-emerald-500" />
-                              <span>Rematch Won (+{weakestDelta.delta_score}pts)</span>
+                              <span>Retry practiced · {weakestResult.new_score}/100</span>
                             </span>
                           )}
                         </div>
@@ -766,7 +751,7 @@ export const DebriefModal: React.FC<DebriefModalProps> = ({
                             title="Drop back into the ring for an immediate 30-second rapid retry against this exact trap"
                           >
                             <Flame size={14} className="text-amber-500" />
-                            <span>{isWeakestOvercome ? "Re-spar Again" : "Re-spar This Exchange (30s Retry)"}</span>
+                            <span>{wasRetried ? "Try Another Retry" : "Practice This Exchange (30s)"}</span>
                           </button>
                         </div>
                       </div>

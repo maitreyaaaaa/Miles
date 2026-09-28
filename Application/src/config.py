@@ -6,15 +6,28 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 APP_DIR = Path(__file__).resolve().parent.parent
-DATA_DIR = APP_DIR / "data"
-DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 # Load .env
 load_dotenv(APP_DIR / ".env")
 
+# Keep persistent stores under one configurable root. Tests and local instances
+# can use separate directories without touching app data.
+DATA_DIR = Path(os.getenv("MILES_DATA_DIR", str(APP_DIR / "data"))).expanduser().resolve()
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+
 
 @dataclass(frozen=True)
 class AppConfig:
+    # Managed user authentication (the public/publishable key belongs in the frontend).
+    supabase_url: str = os.getenv("SUPABASE_URL", "").rstrip("/")
+    supabase_jwt_audience: str = os.getenv("SUPABASE_JWT_AUDIENCE", "authenticated")
+    app_environment: str = os.getenv("APP_ENV", "development").strip().lower()
+
+    # PostgreSQL stores owner-scoped application data. Use the Supabase
+    # transaction-pooler URL at runtime and keep migration credentials separate.
+    database_url: str = os.getenv("DATABASE_URL", "")
+    database_pool_max_size: int = int(os.getenv("DATABASE_POOL_MAX_SIZE", "8"))
+
     # API Keys
     assemblyai_api_key: str = os.getenv("ASSEMBLYAI_API_KEY", "")
     rime_api_key: str = os.getenv("RIME_API_KEY", "")
@@ -26,16 +39,17 @@ class AppConfig:
     google_client_id: str = os.getenv("GOOGLE_CLIENT_ID", "")
     google_client_secret: str = os.getenv("GOOGLE_CLIENT_SECRET", "")
     google_api_key: str = os.getenv("GOOGLE_API_KEY", "")
-    google_redirect_uri: str = os.getenv("GOOGLE_REDIRECT_URI", "http://localhost:5173")
-    google_refresh_token: str = os.getenv("GOOGLE_REFRESH_TOKEN", "")
+    google_redirect_uri: str = os.getenv(
+        "GOOGLE_REDIRECT_URI", "http://localhost:5173/google-integration-callback"
+    )
 
-    # Meeting Bot Provider (Recall.ai for cloud bot or local headless browser)
+    # Meeting Bot Provider (Recall.ai in production; explicit local simulation otherwise)
     recall_ai_api_key: str = os.getenv("RECALL_AI_API_KEY", "")
     recall_ai_region: str = os.getenv("RECALL_AI_REGION", "ap-northeast-1")
     recall_ai_webhook_secret: str = os.getenv("RECALL_AI_WEBHOOK_SECRET", "")
-
-    # Notification / Email Settings
-    resend_api_key: str = os.getenv("RESEND_API_KEY", "")
+    recall_ai_svix_webhook_secret: str = os.getenv("RECALL_AI_SVIX_WEBHOOK_SECRET", "")
+    recall_audio_bridge_url: str = os.getenv("RECALL_AUDIO_BRIDGE_URL", "").strip()
+    recall_audio_bridge_secret: str = os.getenv("RECALL_AUDIO_BRIDGE_SECRET", "")
 
     # Server settings
     host: str = os.getenv("HOST", "0.0.0.0")
@@ -73,7 +87,7 @@ class AppConfig:
 
     @property
     def google_drive_enabled(self) -> bool:
-        return bool(self.google_client_id or self.google_api_key or self.google_refresh_token)
+        return bool((self.google_client_id and self.google_client_secret) or self.google_api_key)
 
     @property
     def google_calendar_enabled(self) -> bool:

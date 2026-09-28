@@ -3,23 +3,35 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+from contextlib import asynccontextmanager
+import datetime
 import json
 import logging
 import math
+import os
+import re
 import struct
 import time
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, File, HTTPException, Query, Request, Response, UploadFile, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+from src.auth import AuthConfigurationError, InvalidAccessToken, SupabaseTokenVerifier
 from src.meeting.models import MeetingConfig, MeetingSession, MeetingStatus
 from src.meeting.scheduler import get_meeting_scheduler, generate_meet_code
 from src.meeting.debrief_dispatcher import get_debrief_dispatcher
 from src.meeting.provider import RecallMeetBotProvider
 from src.meeting.recall_service import RecallService, RecallAPIError
+from src.meeting.bridge_ticket import (
+    InvalidBridgeTicket,
+    add_ticket_to_bridge_url,
+    create_bridge_ticket,
+    verify_bridge_ticket,
+)
 
 from src.analytics.composure_scorer import ComposureScorer
 from src.config import config
@@ -56,48 +68,113 @@ logging.basicConfig(
 )
 logger = logging.getLogger("miles_server")
 
+
+@asynccontextmanager
+async def app_lifespan(_: FastAPI):
+    """Require durable storage in production and verify the pool at startup."""
+    from src.storage.postgres import close_postgres_database, get_postgres_database
+
+    try:
+        if config.app_environment == "production" and not config.database_url:
+            raise RuntimeError("DATABASE_URL is required when APP_ENV=production.")
+        if config.database_url:
+            database = get_postgres_database()
+            await asyncio.to_thread(database.check)
+        yield
+    finally:
+        await asyncio.to_thread(close_postgres_database)
+
 app = FastAPI(
     title="Miles Backend",
     description="Full-Duplex Adversarial Verbal Sparring & Speech Cadence Engine",
     version="0.1.0",
+    docs_url=None if config.app_environment == "production" else "/docs",
+    redoc_url=None if config.app_environment == "production" else "/redoc",
+    openapi_url=None if config.app_environment == "production" else "/openapi.json",
+    lifespan=app_lifespan,
 )
 
-import os
-
-ALLOWED_ORIGIN_REGEX = r"^https?://(localhost|127\.0\.0\.1|([a-zA-Z0-9-]+\.)*vercel\.app|([a-zA-Z0-9-]+\.)*railway\.app)(:\d+)?$"
-ALLOWED_ORIGINS = [
+DEVELOPMENT_ORIGINS = [
     "http://localhost:5173",
     "http://localhost:3000",
     "http://127.0.0.1:5173",
     "http://127.0.0.1:3000",
 ]
 extra_origins = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()]
-ALLOWED_ORIGINS.extend(extra_origins)
+ALLOWED_ORIGINS = extra_origins or (
+    DEVELOPMENT_ORIGINS if config.app_environment != "production" else []
+)
 
 
 def is_allowed_origin(origin: str) -> bool:
     if not origin:
         return True
     norm = origin.rstrip("/")
-    if any(norm == o.rstrip("/") for o in ALLOWED_ORIGINS):
-        return True
-    import re
-    if re.match(ALLOWED_ORIGIN_REGEX, norm):
-        return True
-    if norm.endswith(".vercel.app") or norm.endswith(".railway.app"):
-        return True
-    return False
+    return any(norm == allowed.rstrip("/") for allowed in ALLOWED_ORIGINS)
 
 
 # Enable CORS for browser frontend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
-    allow_origin_regex=ALLOWED_ORIGIN_REGEX,
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
-    allow_headers=["*"],
+    allow_headers=["Authorization", "Content-Type"],
 )
+
+app.state.token_verifier = SupabaseTokenVerifier(
+    config.supabase_url,
+    audience=config.supabase_jwt_audience,
+)
+app.state.auth_test_bypass = False
+
+
+def _is_public_http_route(method: str, path: str) -> bool:
+    if method == "OPTIONS" or path in {"/", "/health", "/api/health"}:
+        return True
+    if path == "/api/webhook/recall":
+        return True  # This route verifies Recall's webhook signature itself.
+    return method == "GET" and re.fullmatch(r"/api/debrief/share/[A-Za-z0-9_-]{1,64}", path) is not None
+
+
+@app.middleware("http")
+async def authenticate_api_request(request: Request, call_next):
+    path = request.url.path
+    if not path.startswith("/api/") or _is_public_http_route(request.method, path):
+        return await call_next(request)
+
+    if app.state.auth_test_bypass:
+        request.state.user_id = "00000000-0000-4000-8000-000000000001"
+        return await call_next(request)
+
+    verifier: SupabaseTokenVerifier = app.state.token_verifier
+    if not config.supabase_url:
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Authentication is not configured for this deployment."},
+        )
+
+    authorization = request.headers.get("authorization", "")
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not token.strip():
+        return JSONResponse(status_code=401, content={"detail": "Authentication required."})
+
+    try:
+        user = await asyncio.to_thread(verifier.verify, token.strip())
+    except AuthConfigurationError:
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "Authentication is not configured for this deployment."},
+        )
+    except InvalidAccessToken:
+        return JSONResponse(status_code=401, content={"detail": "Invalid or expired access token."})
+    except Exception:
+        logger.exception("Authentication token verification failed.")
+        return JSONResponse(status_code=503, content={"detail": "Authentication service unavailable."})
+
+    request.state.user_id = user.user_id
+    request.state.user_email = user.email
+    return await call_next(request)
 
 
 
@@ -146,6 +223,9 @@ class WebSocketChannel:
 
 # In-memory registry of debate sessions
 SESSIONS: Dict[str, DebateEngine] = {}
+SESSION_OWNERS: Dict[str, str] = {}
+MAX_ACTIVE_DEBATE_SESSIONS = 50
+MAX_ACTIVE_SESSIONS_PER_USER = 1
 
 
 def install_stream_shutdown_filter() -> None:
@@ -191,15 +271,17 @@ class ScheduleMeetingRequest(BaseModel):
     difficulty: Optional[str] = "hard"
     topic: Optional[str] = None
     persona_tone: Optional[str] = None
-    max_duration_seconds: Optional[int] = 1800
+    max_duration_seconds: Optional[int] = Field(default=1800, ge=60, le=7200)
     join_at: Optional[str] = None
     schedule_recall_bot: Optional[bool] = True
+    google_access_token: Optional[str] = None
 
 
 class LaunchRecallBotRequest(BaseModel):
     meeting_url: str
     persona_id: Optional[str] = "vc_pitch"
-    bot_name: Optional[str] = None
+    bot_name: Optional[str] = Field(default=None, max_length=100)
+    max_duration_seconds: Optional[int] = Field(default=1800, ge=60, le=7200)
     join_at: Optional[str] = None
     topic: Optional[str] = None
     difficulty: Optional[str] = "hard"
@@ -219,7 +301,165 @@ class GoogleDriveExportRequest(BaseModel):
 
 class GoogleAuthExchangeRequest(BaseModel):
     code: str
-    redirect_uri: Optional[str] = None
+
+
+class GoogleCalendarLinkRequest(BaseModel):
+    access_token: Optional[str] = None
+
+
+def _require_live_meeting_configuration() -> None:
+    missing = []
+    if not config.recall_ai_api_key:
+        missing.append("RECALL_AI_API_KEY")
+    if not (config.recall_ai_webhook_secret or config.recall_ai_svix_webhook_secret):
+        missing.append("RECALL_AI_WEBHOOK_SECRET (or RECALL_AI_SVIX_WEBHOOK_SECRET for legacy workspaces)")
+    if not config.recall_audio_bridge_url:
+        missing.append("RECALL_AUDIO_BRIDGE_URL")
+    elif not config.recall_audio_bridge_url.startswith("https://"):
+        missing.append("RECALL_AUDIO_BRIDGE_URL (must be a public HTTPS URL)")
+    if len(config.recall_audio_bridge_secret) < 32:
+        missing.append("RECALL_AUDIO_BRIDGE_SECRET (at least 32 characters)")
+    if not config.assemblyai_api_key:
+        missing.append("ASSEMBLYAI_API_KEY")
+    if not config.rime_api_key:
+        missing.append("RIME_API_KEY")
+    if not (config.openai_api_key or config.gemini_api_key or config.anthropic_api_key):
+        missing.append("OPENAI_API_KEY, GEMINI_API_KEY, or ANTHROPIC_API_KEY")
+    if missing:
+        raise HTTPException(
+            status_code=503,
+            detail="Live meeting audio is not configured. Set: " + ", ".join(missing),
+        )
+
+
+def _validate_meeting_url(meeting_url: str) -> str:
+    value = meeting_url.strip()
+    parts = urlsplit(value)
+    host = (parts.hostname or "").lower().rstrip(".")
+    supported = (
+        host == "meet.google.com"
+        or host == "zoom.us"
+        or host.endswith(".zoom.us")
+        or host == "teams.microsoft.com"
+        or host.endswith(".teams.microsoft.com")
+        or host == "teams.live.com"
+        or host == "webex.com"
+        or host.endswith(".webex.com")
+    )
+    if parts.scheme != "https" or not supported or parts.username or parts.password:
+        raise HTTPException(
+            status_code=400,
+            detail="A valid meeting URL on Google Meet, Zoom, Microsoft Teams, or Webex is required.",
+        )
+    return value
+
+
+def _bridge_ticket_expiry(join_at: Optional[str], max_duration_seconds: int) -> int:
+    now = int(time.time())
+    expiry = now + max(3600, max_duration_seconds + 900)
+    if not join_at:
+        return expiry
+    try:
+        scheduled_at = datetime.datetime.fromisoformat(join_at.replace("Z", "+00:00"))
+        if scheduled_at.tzinfo is None:
+            scheduled_at = scheduled_at.replace(tzinfo=datetime.timezone.utc)
+        scheduled_epoch = int(scheduled_at.timestamp())
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="join_at must be a valid ISO 8601 date-time.") from exc
+    if scheduled_epoch < now - 60:
+        raise HTTPException(status_code=400, detail="join_at must be in the future.")
+    if scheduled_epoch > now + 30 * 24 * 60 * 60:
+        raise HTTPException(status_code=400, detail="Meetings can be scheduled up to 30 days ahead.")
+    return max(expiry, scheduled_epoch + max_duration_seconds + 900)
+
+
+async def _dispatch_recall_bot(
+    session: MeetingSession,
+    *,
+    bot_name: str,
+    join_at: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Create the Recall bot with its authenticated live audio webpage."""
+    _require_live_meeting_configuration()
+    scheduler = get_meeting_scheduler()
+    other_active_bots = [
+        current for current in await asyncio.to_thread(scheduler.list_sessions, session.owner_id or "")
+        if current.meeting_id != session.meeting_id
+        and current.recall_bot_id
+        and current.status in {MeetingStatus.SCHEDULED, MeetingStatus.CONNECTING, MeetingStatus.IN_CALL}
+    ]
+    if other_active_bots:
+        raise HTTPException(status_code=429, detail="This account already has an active or scheduled meeting bot.")
+    expiry = _bridge_ticket_expiry(join_at, session.config.max_duration_seconds)
+    ticket = create_bridge_ticket(
+        meeting_id=session.meeting_id,
+        owner_id=session.owner_id or "",
+        secret=config.recall_audio_bridge_secret,
+        expires_at=expiry,
+    )
+    bridge_url = add_ticket_to_bridge_url(config.recall_audio_bridge_url, ticket)
+    metadata = {
+        "session_id": session.meeting_id,
+        "owner_id": session.owner_id,
+        "persona_id": session.persona_id,
+        "difficulty": session.difficulty,
+        "topic": session.topic or "Sparring",
+    }
+    service = RecallService()
+    bot_data = await service.create_bot(
+        meeting_url=session.meet_url,
+        bot_name=bot_name,
+        join_at=join_at,
+        metadata=metadata,
+        output_media_url=bridge_url,
+        max_duration_seconds=session.config.max_duration_seconds,
+    )
+    bot_id = bot_data.get("id")
+    if not isinstance(bot_id, str) or not bot_id:
+        raise RecallAPIError("Recall.ai accepted the request without returning a bot ID.", status_code=502)
+
+    provider_notice = (
+        f"Live audio bridge configured in {service.region}. Recall Output Media displays a visual feed in the call."
+    )
+
+    try:
+        persisted_session = await asyncio.to_thread(
+            scheduler.store.attach_recall_bot,
+            session,
+            bot_id,
+            join_at=join_at,
+            provider_notice=provider_notice,
+        )
+        session.__dict__.update(persisted_session.__dict__)
+    except Exception:
+        logger.exception("Could not persist Recall bot ID for meeting %s.", session.meeting_id)
+        with contextlib.suppress(Exception):
+            if join_at:
+                await service.delete_scheduled_bot(bot_id)
+            else:
+                await service.leave_call(bot_id)
+        raise
+
+    if isinstance(scheduler.bot_provider, RecallMeetBotProvider):
+        scheduler.bot_provider.active_bot_ids[session.meeting_id] = bot_id
+        scheduler.bot_provider.bot_statuses[session.meeting_id] = "ready"
+    return {"bot_id": bot_id, "bot_data": bot_data, "region": service.region}
+
+
+async def _end_recall_bot(session: MeetingSession) -> str:
+    service = RecallService()
+    if session.status == MeetingStatus.SCHEDULED and session.recall_status in {None, "ready", "scheduled"}:
+        if await service.delete_scheduled_bot(session.recall_bot_id or ""):
+            session.status = MeetingStatus.CANCELLED
+            session.recall_status = "cancelled_by_user"
+            session.recall_status_message = "The scheduled bot was cancelled by the user."
+            session.recall_status_updated_at = time.time()
+            session.ended_at = time.time()
+            await asyncio.to_thread(get_meeting_scheduler().store.save_session, session)
+            return "cancelled"
+    if await service.leave_call(session.recall_bot_id or ""):
+        return "leave_requested"
+    raise HTTPException(status_code=502, detail="Recall.ai could not end the meeting bot.")
 
 
 def calculate_pcm_rms(pcm_bytes: bytes) -> float:
@@ -242,25 +482,10 @@ def calculate_pcm_rms(pcm_bytes: bytes) -> float:
 @app.get("/health")
 @app.get("/api/health")
 async def health_check():
-    """System health check & active provider status."""
+    """Minimal public liveness response; provider diagnostics require sign-in."""
     return {
         "status": "healthy",
         "service": "Miles Voice Engine",
-        "active_providers": {
-            "stt": config.active_stt_provider,
-            "tts": config.active_tts_provider,
-            "llm": config.active_llm_provider,
-            "google_drive": config.google_drive_enabled,
-            "google_meet": config.google_calendar_enabled,
-            "recall_ai": config.recall_ai_enabled,
-        },
-        "config": {
-            "sample_rate": config.sample_rate,
-            "tts_sample_rate": config.tts_sample_rate,
-            "rime_speaker": config.rime_speaker,
-            "barge_in_threshold_ms": config.barge_in_threshold_ms,
-        },
-        "active_sessions_count": len(SESSIONS),
     }
 
 
@@ -374,7 +599,6 @@ class RematchEvaluateRequest(BaseModel):
     original_quote: str
     upgraded_answer: str
     duration_seconds: Optional[float] = 10.0
-    original_score: Optional[int] = 55
     wpm: Optional[float] = None
     fillers: Optional[List[str]] = None
 
@@ -383,7 +607,7 @@ class RematchEvaluateRequest(BaseModel):
 async def evaluate_rematch_endpoint(req: RematchEvaluateRequest):
     """Evaluate a 30-second rapid-fire retry against an adversarial trap.
     
-    Returns new score, composure delta (+points), filler reductions, and adversary concession.
+    Returns a standalone retry assessment and transcript-based speech metrics.
     """
     upgraded = req.upgraded_answer.strip()
     if not upgraded:
@@ -398,7 +622,6 @@ async def evaluate_rematch_endpoint(req: RematchEvaluateRequest):
             original_quote=req.original_quote,
             upgraded_answer=upgraded,
             duration_seconds=req.duration_seconds or 10.0,
-            original_score=req.original_score or 55,
             wpm=req.wpm,
             fillers=req.fillers,
         )
@@ -410,22 +633,38 @@ async def evaluate_rematch_endpoint(req: RematchEvaluateRequest):
 
 class ShareDebriefRequest(BaseModel):
     report: Dict[str, Any]
-    share_id: Optional[str] = None
 
 
 @app.post("/api/debrief/share")
-async def share_debrief_endpoint(req: ShareDebriefRequest):
+async def share_debrief_endpoint(req: ShareDebriefRequest, request: Request):
     """Persist a debrief report and return a permanent read-only shareable ID and URL."""
     try:
         store = get_debrief_store()
-        share_id = store.save_debrief(req.report, custom_share_id=req.share_id)
+        owner_id = request.state.user_id
+        report_session_id = req.report.get("session_id")
+        if not isinstance(report_session_id, str):
+            raise HTTPException(status_code=404, detail="Debrief report not found.")
+        owned_debate = report_session_id and (
+            SESSION_OWNERS.get(report_session_id) == owner_id
+            or await asyncio.to_thread(store.get_report, report_session_id, owner_id)
+        )
+        owned_meeting = report_session_id and await asyncio.to_thread(
+            get_meeting_scheduler().get_session, owner_id, report_session_id
+        )
+        if not owned_debate and not owned_meeting:
+            raise HTTPException(status_code=404, detail="Debrief report not found.")
+        share_id = await asyncio.to_thread(store.save_debrief, req.report, owner_id)
         return {
             "share_id": share_id,
             "share_url": f"/?share={share_id}",
             "share_scope": "unguessable_read_only_link",
-            "privacy_notice": "Anyone with this local share URL can view the debrief report.",
+            "privacy_notice": "Anyone with this share link can view the debrief report.",
             "title": req.report.get("topic", "Adversarial Debrief"),
         }
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     except Exception as e:
         logger.error(f"[Debrief Share] Error saving debrief: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -435,25 +674,32 @@ async def share_debrief_endpoint(req: ShareDebriefRequest):
 async def get_shared_debrief_endpoint(share_id: str):
     """Retrieve saved read-only debrief report by its share token."""
     store = get_debrief_store()
-    report = store.get_debrief(share_id)
+    report = await asyncio.to_thread(store.get_debrief, share_id)
     if not report:
         raise HTTPException(status_code=404, detail="Debrief report not found or expired.")
-    return JSONResponse(content=report, headers={"Cache-Control": "no-store"})
+    public_report = {key: value for key, value in report.items() if key != "owner_id"}
+    return JSONResponse(content=public_report, headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/debrief/{session_id}/pdf")
-async def export_debrief_pdf_endpoint(session_id: str):
+async def export_debrief_pdf_endpoint(session_id: str, request: Request):
     """Generate and stream a pixel-perfect ReportLab Executive Summary PDF."""
     report = None
-    if session_id in SESSIONS:
+    owner_id = request.state.user_id
+    if SESSION_OWNERS.get(session_id) == owner_id and session_id in SESSIONS:
         engine = SESSIONS[session_id]
         report = getattr(engine, "_cached_report", None) or engine.get_debrief_report()
     if not report:
         store = get_debrief_store()
-        report = store.get_debrief(session_id)
+        report = await asyncio.to_thread(store.get_report, session_id, owner_id)
+        if not report:
+            report = await asyncio.to_thread(store.get_debrief, session_id, owner_id)
     if not report:
-        dispatcher = get_debrief_dispatcher()
-        report = dispatcher.get_saved_debrief(session_id)
+        meeting = await asyncio.to_thread(get_meeting_scheduler().get_session, owner_id, session_id)
+        if meeting:
+            report = meeting.debrief_report or await asyncio.to_thread(
+                get_debrief_dispatcher().get_saved_debrief, session_id, owner_id
+            )
     if not report:
         raise HTTPException(status_code=404, detail=f"Session or debrief report '{session_id}' not found for PDF export.")
 
@@ -489,7 +735,7 @@ MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10 MB
 
 
 @app.post("/api/context/upload")
-async def upload_context_document(file: UploadFile = File(...)):
+async def upload_context_document(request: Request, file: UploadFile = File(...)):
     """Ingest uploaded document (PDF, DOCX, TXT, MD, CSV) with bounded streaming size."""
     if not file.filename:
         raise HTTPException(status_code=400, detail="Missing filename.")
@@ -512,7 +758,7 @@ async def upload_context_document(file: UploadFile = File(...)):
 
     store = get_context_store()
     dossier = await analyze_context_document(extracted["text"], file.filename)
-    store.save_context(dossier)
+    await asyncio.to_thread(store.save_context, request.state.user_id, dossier)
     return dossier.to_dict()
 
 
@@ -522,7 +768,7 @@ class PasteContextRequest(BaseModel):
 
 
 @app.post("/api/context/paste")
-async def paste_context_text(req: PasteContextRequest):
+async def paste_context_text(req: PasteContextRequest, request: Request):
     """Ingest raw pasted text/resume/pitch deck notes and generate structured forensic Context Dossier."""
     text = req.text.strip()
     if not text:
@@ -531,25 +777,25 @@ async def paste_context_text(req: PasteContextRequest):
     filename = req.filename or "Pasted Context.txt"
     store = get_context_store()
     dossier = await analyze_context_document(text, filename)
-    store.save_context(dossier)
+    await asyncio.to_thread(store.save_context, request.state.user_id, dossier)
     return dossier.to_dict()
 
 
 @app.get("/api/context/{context_id}")
-async def get_context_by_id(context_id: str):
+async def get_context_by_id(context_id: str, request: Request):
     """Retrieve an existing context dossier by ID."""
     store = get_context_store()
-    dossier = store.get_context(context_id)
+    dossier = await asyncio.to_thread(store.get_context, request.state.user_id, context_id)
     if not dossier:
         raise HTTPException(status_code=404, detail="Context not found.")
     return dossier.to_dict()
 
 
 @app.get("/api/contexts")
-async def list_available_contexts():
+async def list_available_contexts(request: Request):
     """List all previously ingested context dossiers."""
     store = get_context_store()
-    return {"contexts": store.list_contexts()}
+    return {"contexts": await asyncio.to_thread(store.list_contexts, request.state.user_id)}
 
 
 # ==========================================
@@ -566,40 +812,45 @@ async def get_google_auth_config():
         "redirect_uri": config.google_redirect_uri,
         "drive_enabled": config.google_drive_enabled,
         "calendar_enabled": config.google_calendar_enabled,
+        "oauth_enabled": bool(config.google_client_id and config.google_client_secret),
     }
 
 
 @app.get("/api/auth/google/url")
-async def get_google_authorization_url(redirect_uri: Optional[str] = Query(None)):
-    """Generate the Google OAuth consent URL for user login."""
-    if not config.google_client_id:
+async def get_google_authorization_url(purpose: str = Query(...), state: str = Query(..., min_length=16, max_length=256)):
+    """Generate a scoped Google OAuth consent URL for a signed-in integration."""
+    if not config.google_client_id or not config.google_client_secret:
         raise HTTPException(
             status_code=400,
-            detail="GOOGLE_CLIENT_ID is not configured in .env. Please configure your Google Cloud OAuth Client ID.",
+            detail="Google OAuth is not configured for this deployment.",
         )
     try:
-        url = get_google_auth_url(redirect_uri=redirect_uri)
+        url = get_google_auth_url(purpose=purpose, state=state)
         return {"auth_url": url}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.exception("Could not create Google integration consent URL.")
+        raise HTTPException(status_code=500, detail="Could not start Google authorization.")
 
 
 @app.post("/api/auth/google/callback")
 async def handle_google_oauth_callback(req: GoogleAuthExchangeRequest):
-    """Exchange authorization code for Google access and refresh tokens."""
+    """Exchange a user-authorized code and return only the short-lived access token."""
     try:
-        tokens = await exchange_google_code_for_tokens(
-            code=req.code,
-            redirect_uri=req.redirect_uri,
-        )
-        return tokens
+        tokens = await exchange_google_code_for_tokens(code=req.code)
+        return {
+            key: tokens[key]
+            for key in ("access_token", "token_type", "expires_in", "scope")
+            if key in tokens
+        }
     except Exception as e:
-        logger.error(f"[GoogleOAuth] Token exchange error: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
+        logger.warning("Google integration authorization-code exchange failed: %s", e)
+        raise HTTPException(status_code=400, detail="Google authorization could not be completed.")
 
 
 @app.post("/api/context/google-drive/import")
-async def import_from_google_drive(req: GoogleDriveImportRequest):
+async def import_from_google_drive(req: GoogleDriveImportRequest, request: Request):
     """Fetch, extract, and analyze a document directly from Google Drive, Docs, Sheets, or Slides."""
     file_id = extract_google_drive_file_id(req.url_or_id)
     if not file_id:
@@ -631,7 +882,7 @@ async def import_from_google_drive(req: GoogleDriveImportRequest):
 
         dossier = await analyze_context_document(text, filename, req.doc_type_hint)
         store = get_context_store()
-        store.save_context(dossier)
+        await asyncio.to_thread(store.save_context, request.state.user_id, dossier)
         return dossier.to_dict()
 
     except HTTPException:
@@ -642,18 +893,20 @@ async def import_from_google_drive(req: GoogleDriveImportRequest):
 
 
 @app.post("/api/debrief/{session_id}/export-drive")
-async def export_debrief_to_google_drive(session_id: str, req: GoogleDriveExportRequest):
+async def export_debrief_to_google_drive(session_id: str, req: GoogleDriveExportRequest, request: Request):
     """Export the finalized debrief report as an Executive PDF directly to Google Drive."""
     report = None
-    engine = SESSIONS.get(session_id)
+    owner_id = request.state.user_id
+    engine = SESSIONS.get(session_id) if SESSION_OWNERS.get(session_id) == owner_id else None
     if engine:
         report = engine.get_debrief_report()
 
     if not report:
-        debrief_store = get_debrief_store()
-        saved = debrief_store.get_debrief(session_id)
-        if saved:
-            report = saved.get("report")
+        report = await asyncio.to_thread(get_debrief_store().get_report, session_id, owner_id)
+    if not report:
+        meeting = await asyncio.to_thread(get_meeting_scheduler().get_session, owner_id, session_id)
+        if meeting:
+            report = meeting.debrief_report
 
     if not report:
         raise HTTPException(status_code=404, detail="Debrief report not found for this session.")
@@ -670,12 +923,16 @@ async def export_debrief_to_google_drive(session_id: str, req: GoogleDriveExport
 
 
 @app.get("/api/session/{session_id}/report")
-async def get_session_report(session_id: str):
+async def get_session_report(session_id: str, request: Request):
     """Retrieve the post-debate debrief report for a completed session."""
-    engine = SESSIONS.get(session_id)
-    if not engine:
-        raise HTTPException(status_code=404, detail="Debate session not found.")
-    return engine.get_debrief_report()
+    owner_id = request.state.user_id
+    engine = SESSIONS.get(session_id) if SESSION_OWNERS.get(session_id) == owner_id else None
+    report = engine.get_debrief_report() if engine else await asyncio.to_thread(
+        get_debrief_store().get_report, session_id, owner_id
+    )
+    if not report:
+        raise HTTPException(status_code=404, detail="Debate report not found.")
+    return report
 
 
 # ==========================================
@@ -684,7 +941,7 @@ async def get_session_report(session_id: str):
 
 
 @app.post("/api/meeting/schedule")
-async def schedule_google_meet(req: ScheduleMeetingRequest):
+async def schedule_google_meet(req: ScheduleMeetingRequest, request: Request):
     """Schedule a Google Meet sparring session for Miles, with optional Google Calendar provisioning & Recall bot scheduling."""
     scheduler = get_meeting_scheduler()
     meet_url = req.meet_url
@@ -693,7 +950,7 @@ async def schedule_google_meet(req: ScheduleMeetingRequest):
     event_id = None
     if not meet_url and config.google_calendar_enabled:
         try:
-            provisioner = GoogleMeetProvisioner()
+            provisioner = GoogleMeetProvisioner(access_token=req.google_access_token)
             res = await provisioner.create_meeting_room(
                 title=f"Miles Sparring: {req.topic or 'Debate'}",
                 duration_minutes=int((req.max_duration_seconds or 1800) / 60),
@@ -708,7 +965,9 @@ async def schedule_google_meet(req: ScheduleMeetingRequest):
         max_duration_seconds=req.max_duration_seconds or 1800,
         audio_only=True,
     )
-    session = scheduler.schedule_meeting(
+    session = await asyncio.to_thread(
+        scheduler.schedule_meeting,
+        owner_id=request.state.user_id,
         meet_url=meet_url,
         context_id=req.context_id,
         persona_id=req.persona_id or "vc_pitch",
@@ -721,24 +980,18 @@ async def schedule_google_meet(req: ScheduleMeetingRequest):
     scheduled_bot_id = None
     if req.schedule_recall_bot and req.join_at and meet_url and config.recall_ai_enabled:
         try:
-            recall_svc = RecallService()
-            bot_data = await recall_svc.create_bot(
-                meeting_url=meet_url,
+            meet_url = _validate_meeting_url(meet_url)
+            session.meet_url = meet_url
+            dispatched = await _dispatch_recall_bot(
+                session,
                 bot_name=f"Miles AI ({session.persona_id.replace('_', ' ').title()})",
                 join_at=req.join_at,
-                metadata={
-                    "session_id": session.meeting_id,
-                    "persona_id": session.persona_id,
-                    "topic": req.topic or "Sparring",
-                },
             )
-            scheduled_bot_id = bot_data.get("id")
-            if isinstance(scheduler.bot_provider, RecallMeetBotProvider):
-                scheduler.bot_provider.active_bot_ids[session.meeting_id] = scheduled_bot_id
-                scheduler.bot_provider.bot_statuses[session.meeting_id] = "scheduled"
+            scheduled_bot_id = dispatched["bot_id"]
             logger.info(f"[API] Scheduled Recall bot {scheduled_bot_id} for join_at: {req.join_at}")
-        except Exception as e:
-            logger.warning(f"[API] Could not schedule Recall bot for join_at {req.join_at}: {e}")
+        except Exception:
+            await asyncio.to_thread(scheduler.store.delete_session, request.state.user_id, session.meeting_id)
+            raise
 
     result = session.to_dict()
     if calendar_provisioned:
@@ -751,11 +1004,46 @@ async def schedule_google_meet(req: ScheduleMeetingRequest):
 
 
 @app.post("/api/meeting/{meeting_id}/start")
-async def start_google_meet_session(meeting_id: str):
-    """Deploy Miles bot into the Google Meet call (audio-only)."""
+async def start_google_meet_session(meeting_id: str, request: Request):
+    """Start Miles through Recall Output Media, or the local development simulator."""
     scheduler = get_meeting_scheduler()
+    session = await asyncio.to_thread(scheduler.get_session, request.state.user_id, meeting_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Meeting not found.")
+    if session.recall_bot_id:
+        return {
+            "status": session.status.value,
+            "meeting_id": meeting_id,
+            "bot_id": session.recall_bot_id,
+            "recall_status": session.recall_status,
+            "session": session.to_dict(),
+        }
+    if scheduler.bot_provider.provider_mode == "unconfigured":
+        raise HTTPException(
+            status_code=503,
+            detail="No live meeting bot provider is configured for this deployment.",
+        )
+    if isinstance(scheduler.bot_provider, RecallMeetBotProvider):
+        try:
+            dispatched = await _dispatch_recall_bot(
+                session,
+                bot_name=f"Miles AI ({session.persona_id.replace('_', ' ').title()})",
+            )
+            return {
+                "status": session.status.value,
+                "meeting_id": meeting_id,
+                "bot_id": dispatched["bot_id"],
+                "recall_status": session.recall_status,
+                "region": dispatched["region"],
+                "session": session.to_dict(),
+            }
+        except (HTTPException, RecallAPIError) as exc:
+            raise HTTPException(
+                status_code=exc.status_code if isinstance(exc, RecallAPIError) else exc.status_code,
+                detail=exc.detail if isinstance(exc, RecallAPIError) else exc.detail,
+            ) from exc
     try:
-        coordinator = await scheduler.start_meeting(meeting_id)
+        coordinator = await scheduler.start_meeting(request.state.user_id, meeting_id)
         return {
             "status": "in_call",
             "meeting_id": meeting_id,
@@ -769,12 +1057,23 @@ async def start_google_meet_session(meeting_id: str):
 
 
 @app.post("/api/meeting/{meeting_id}/stop")
-async def stop_google_meet_session(meeting_id: str):
-    """Conclude Google Meet session, disconnect bot, and generate deep debrief report."""
+async def stop_google_meet_session(meeting_id: str, request: Request):
+    """End a live Recall call or stop a local session and return its debrief."""
     scheduler = get_meeting_scheduler()
+    session = await asyncio.to_thread(scheduler.get_session, request.state.user_id, meeting_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Meeting not found.")
+    if session.recall_bot_id:
+        if session.debrief_report:
+            return {"status": "completed", "meeting_id": meeting_id, "debrief_report": session.debrief_report}
+        try:
+            stop_status = await _end_recall_bot(session)
+        except RecallAPIError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        return {"status": stop_status, "meeting_id": meeting_id, "debrief_report": None}
     try:
-        report = await scheduler.stop_meeting(meeting_id)
-        session = scheduler.get_session(meeting_id)
+        report = await scheduler.stop_meeting(request.state.user_id, meeting_id)
+        session = await asyncio.to_thread(scheduler.get_session, request.state.user_id, meeting_id)
         return {
             "status": "completed",
             "meeting_id": meeting_id,
@@ -786,11 +1085,11 @@ async def stop_google_meet_session(meeting_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/meeting/generate-link")
-async def generate_instant_link(access_token: Optional[str] = Query(None)):
+@app.post("/api/meeting/generate-link")
+async def generate_instant_link(req: GoogleCalendarLinkRequest):
     """Generate a real Google Meet room (via Google Calendar) or fall back cleanly to a local simulation link."""
     scheduler = get_meeting_scheduler()
-    provisioner = GoogleMeetProvisioner(access_token=access_token)
+    provisioner = GoogleMeetProvisioner(access_token=req.access_token)
     res = await provisioner.create_meeting_room()
     return {
         "meet_url": res["meet_url"],
@@ -807,11 +1106,9 @@ async def generate_instant_link(access_token: Optional[str] = Query(None)):
 
 
 @app.post("/api/meeting/bot/launch")
-async def launch_meeting_bot(req: LaunchRecallBotRequest):
-    """Launch an ad-hoc or scheduled Recall.ai bot into any Google Meet, Zoom, or Teams call."""
-    meeting_url = req.meeting_url.strip()
-    if not meeting_url or not (meeting_url.startswith("http://") or meeting_url.startswith("https://")):
-        raise HTTPException(status_code=400, detail="A valid meeting URL (Google Meet, Zoom, Teams) is required.")
+async def launch_meeting_bot(req: LaunchRecallBotRequest, request: Request):
+    """Launch an ad-hoc or scheduled Recall.ai bot into a supported meeting platform."""
+    meeting_url = _validate_meeting_url(req.meeting_url)
 
     recall_svc = RecallService()
     if not recall_svc.api_key:
@@ -820,13 +1117,16 @@ async def launch_meeting_bot(req: LaunchRecallBotRequest):
             detail="RECALL_AI_API_KEY is not configured in .env. Please configure your Recall.ai API key.",
         )
 
+    _require_live_meeting_configuration()
     persona_id = req.persona_id or "vc_pitch"
     persona_title = persona_id.replace("_", " ").title()
     bot_name = req.bot_name or f"Miles AI ({persona_title})"
 
     scheduler = get_meeting_scheduler()
-    cfg = MeetingConfig(max_duration_seconds=1800, audio_only=True)
-    session = scheduler.schedule_meeting(
+    cfg = MeetingConfig(max_duration_seconds=req.max_duration_seconds or 1800, audio_only=True)
+    session = await asyncio.to_thread(
+        scheduler.schedule_meeting,
+        owner_id=request.state.user_id,
         meet_url=meeting_url,
         context_id=req.context_id,
         persona_id=persona_id,
@@ -835,68 +1135,78 @@ async def launch_meeting_bot(req: LaunchRecallBotRequest):
         config=cfg,
     )
 
-    metadata = {
-        "session_id": session.meeting_id,
-        "persona_id": persona_id,
-        "topic": req.topic or "Sparring",
-        "difficulty": req.difficulty or "hard",
-    }
-
     try:
-        bot_data = await recall_svc.create_bot(
-            meeting_url=meeting_url,
+        dispatched = await _dispatch_recall_bot(
+            session,
             bot_name=bot_name,
             join_at=req.join_at,
-            metadata=metadata,
         )
-        bot_id = bot_data.get("id")
-        if isinstance(scheduler.bot_provider, RecallMeetBotProvider):
-            scheduler.bot_provider.active_bot_ids[session.meeting_id] = bot_id
-            scheduler.bot_provider.bot_statuses[session.meeting_id] = "joining_call"
-
         return {
-            "status": "success",
-            "bot_id": bot_id,
+            "status": session.status.value,
+            "bot_id": dispatched["bot_id"],
             "meeting_id": session.meeting_id,
             "meeting_url": meeting_url,
             "bot_name": bot_name,
             "join_at": req.join_at,
-            "bot_details": bot_data,
+            "recall_status": session.recall_status,
+            "region": dispatched["region"],
         }
     except RecallAPIError as e:
+        await asyncio.to_thread(scheduler.store.delete_session, request.state.user_id, session.meeting_id)
         raise HTTPException(status_code=e.status_code, detail=f"Recall.ai error: {e.detail}")
+    except HTTPException:
+        await asyncio.to_thread(scheduler.store.delete_session, request.state.user_id, session.meeting_id)
+        raise
     except Exception as e:
+        await asyncio.to_thread(scheduler.store.delete_session, request.state.user_id, session.meeting_id)
         logger.error(f"[API] Error launching Recall bot: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/meeting/bot/{bot_id}")
-async def get_bot_status(bot_id: str):
-    """Query real-time status, participants, and lifecycle events of a Recall.ai bot."""
-    recall_svc = RecallService()
-    try:
-        return await recall_svc.get_bot(bot_id)
-    except RecallAPIError as e:
-        raise HTTPException(status_code=e.status_code, detail=str(e))
+async def get_bot_status(bot_id: str, request: Request):
+    """Return the latest lifecycle state delivered by Recall's signed webhook."""
+    owner_id = request.state.user_id
+    session = await asyncio.to_thread(get_meeting_scheduler().find_session_by_bot, owner_id, bot_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Meeting bot not found.")
+    return {
+        "id": session.recall_bot_id,
+        "status": session.recall_status or "ready",
+        "status_message": session.recall_status_message,
+        "meeting_status": session.status.value,
+        "updated_at": session.recall_status_updated_at,
+    }
 
 
 @app.post("/api/meeting/bot/{bot_id}/leave")
-async def leave_meeting_bot(bot_id: str):
+async def leave_meeting_bot(bot_id: str, request: Request):
     """Instruct an active Recall.ai bot to exit the meeting room."""
-    recall_svc = RecallService()
+    session = await asyncio.to_thread(
+        get_meeting_scheduler().find_session_by_bot, request.state.user_id, bot_id
+    )
+    if not session:
+        raise HTTPException(status_code=404, detail="Meeting bot not found.")
     try:
-        success = await recall_svc.leave_call(bot_id)
-        return {"success": success, "bot_id": bot_id, "message": "Bot instructed to leave meeting call."}
+        action = await _end_recall_bot(session)
+        return {"success": True, "bot_id": bot_id, "action": action, "message": "Recall.ai accepted the request."}
     except RecallAPIError as e:
         raise HTTPException(status_code=e.status_code, detail=str(e))
 
 
 @app.get("/api/meeting/bots")
-async def list_recall_bots(limit: int = Query(20, ge=1, le=100)):
-    """List recent active and scheduled Recall bots."""
+async def list_recall_bots(request: Request, limit: int = Query(20, ge=1, le=100)):
+    """List only Recall bots owned by the authenticated user."""
     recall_svc = RecallService()
     bots = await recall_svc.list_bots(limit=limit)
-    return {"bots": bots, "region": recall_svc.region}
+    owned_bot_ids = {
+        session.recall_bot_id
+        for session in await asyncio.to_thread(
+            get_meeting_scheduler().list_sessions, request.state.user_id
+        )
+        if session.recall_bot_id
+    }
+    return {"bots": [bot for bot in bots if bot.get("id") in owned_bot_ids], "region": recall_svc.region}
 
 
 @app.post("/api/webhook/recall")
@@ -911,56 +1221,125 @@ async def handle_recall_webhook(request: Request):
 
     try:
         payload = json.loads(raw_body)
-        event_type = payload.get("event")
-        data = payload.get("data", {})
-        bot_id = data.get("bot_id") or data.get("bot", {}).get("id")
-        logger.info(f"[RecallWebhook] Verified webhook received: '{event_type}' for bot {bot_id}")
+        event_type = payload.get("event", "")
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+        bot_data = data.get("bot") if isinstance(data.get("bot"), dict) else {}
+        status_data = data.get("status") if isinstance(data.get("status"), dict) else {}
+        nested_status = data.get("data") if isinstance(data.get("data"), dict) else {}
+        bot_id = data.get("bot_id") or bot_data.get("id")
+        status_code = (
+            status_data.get("code")
+            or nested_status.get("code")
+            or (event_type[4:] if event_type.startswith("bot.") and event_type != "bot.status_change" else None)
+        )
+        metadata = bot_data.get("metadata") or data.get("metadata") or {}
+        meeting_id = metadata.get("session_id") or metadata.get("meeting_id")
+        owner_id = metadata.get("owner_id")
+
+        if not (isinstance(bot_id, str) and isinstance(status_code, str)):
+            return {"status": "ignored", "event": event_type}
+
+        updated_at = status_data.get("created_at") or nested_status.get("updated_at")
+        try:
+            changed_at = datetime.datetime.fromisoformat(str(updated_at).replace("Z", "+00:00")).timestamp()
+        except (TypeError, ValueError):
+            changed_at = time.time()
+
+        session = None
+        if isinstance(meeting_id, str) and isinstance(owner_id, str):
+            scheduler = get_meeting_scheduler()
+            session = await asyncio.to_thread(scheduler.get_session, owner_id, meeting_id)
+
+        if not session:
+            logger.info("[RecallWebhook] Verified but unlinked event %s for bot %s", event_type, bot_id)
+            return {"status": "received", "event": event_type, "bot_id": bot_id}
+        if session.recall_bot_id and session.recall_bot_id != bot_id:
+            logger.warning("[RecallWebhook] Ignored bot ID mismatch for meeting %s", session.meeting_id)
+            return {"status": "ignored", "event": event_type}
+        if session.recall_status_updated_at and changed_at < session.recall_status_updated_at:
+            return {"status": "ignored", "event": event_type, "reason": "stale_status"}
+
+        session.recall_bot_id = bot_id
+        session.recall_status = status_code
+        session.recall_status_updated_at = changed_at
+        session.recall_status_message = (
+            status_data.get("message") or status_data.get("sub_code")
+            or nested_status.get("message") or nested_status.get("sub_code")
+        )
+        now = time.time()
+        if session.status in {MeetingStatus.COMPLETED, MeetingStatus.FAILED, MeetingStatus.CANCELLED}:
+            pass
+        elif status_code in {"in_call_recording", "in_call_not_recording", "recording_permission_allowed", "recording_permission_denied"}:
+            session.status = MeetingStatus.IN_CALL
+            session.started_at = session.started_at or changed_at or now
+            session.error_message = None
+        elif status_code in {"joining_call", "in_waiting_room"}:
+            if session.status == MeetingStatus.SCHEDULED:
+                session.status = MeetingStatus.CONNECTING
+        elif status_code in {"call_ended", "done"}:
+            if session.status != MeetingStatus.FAILED:
+                session.status = MeetingStatus.COMPLETED
+                session.error_message = None
+            session.ended_at = session.ended_at or changed_at or now
+            if session.started_at:
+                session.duration_seconds = max(0.0, session.ended_at - session.started_at)
+        elif status_code == "fatal":
+            session.status = MeetingStatus.FAILED
+            session.error_message = session.recall_status_message or "Recall.ai could not join or continue the meeting."
+            session.ended_at = session.ended_at or changed_at or now
+            if session.started_at:
+                session.duration_seconds = max(0.0, session.ended_at - session.started_at)
+
+        await asyncio.to_thread(get_meeting_scheduler().store.save_session, session)
+        logger.info("[RecallWebhook] Updated meeting %s to Recall status %s", session.meeting_id, status_code)
         return {"status": "received", "event": event_type, "bot_id": bot_id}
     except Exception as e:
         logger.error(f"[RecallWebhook] Error processing webhook: {e}")
-        return {"status": "error", "detail": str(e)}
+        raise HTTPException(status_code=400, detail="Invalid Recall webhook payload.") from e
 
 
 @app.get("/api/meetings")
-async def list_google_meet_sessions():
-    """List all scheduled and historical Google Meet sessions."""
+async def list_google_meet_sessions(request: Request):
+    """List the authenticated user's scheduled and historical Google Meet sessions."""
     scheduler = get_meeting_scheduler()
-    sessions = scheduler.list_sessions()
+    sessions = await asyncio.to_thread(scheduler.list_sessions, request.state.user_id)
     return {"meetings": [s.to_dict() for s in sessions]}
 
 
 @app.get("/api/meeting/{meeting_id}")
-async def get_google_meet_session(meeting_id: str):
+async def get_google_meet_session(meeting_id: str, request: Request):
     """Retrieve Google Meet session details and status."""
     scheduler = get_meeting_scheduler()
-    session = scheduler.get_session(meeting_id)
+    session = await asyncio.to_thread(scheduler.get_session, request.state.user_id, meeting_id)
     if not session:
         raise HTTPException(status_code=404, detail="Meeting not found.")
     return session.to_dict()
 
 
 @app.get("/api/meeting/{meeting_id}/debrief")
-async def get_google_meet_debrief(meeting_id: str):
+async def get_google_meet_debrief(meeting_id: str, request: Request):
     """Retrieve debrief report for a completed Google Meet session."""
     scheduler = get_meeting_scheduler()
-    session = scheduler.get_session(meeting_id)
+    session = await asyncio.to_thread(scheduler.get_session, request.state.user_id, meeting_id)
     if not session:
         raise HTTPException(status_code=404, detail="Meeting not found.")
     if session.debrief_report:
         return session.debrief_report
 
     dispatcher = get_debrief_dispatcher()
-    saved = dispatcher.get_saved_debrief(meeting_id)
+    saved = await asyncio.to_thread(
+        dispatcher.get_saved_debrief, meeting_id, request.state.user_id
+    )
     if saved:
         return saved
     raise HTTPException(status_code=404, detail="Debate debrief report not available for this meeting yet.")
 
 
 @app.get("/api/meeting/{meeting_id}/debrief/html")
-async def get_google_meet_debrief_html(meeting_id: str):
+async def get_google_meet_debrief_html(meeting_id: str, request: Request):
     """Retrieve HTML formatted debrief email report."""
     scheduler = get_meeting_scheduler()
-    session = scheduler.get_session(meeting_id)
+    session = await asyncio.to_thread(scheduler.get_session, request.state.user_id, meeting_id)
     if not session or not session.debrief_report:
         raise HTTPException(status_code=404, detail="Meeting or debrief report not found.")
     dispatcher = get_debrief_dispatcher()
@@ -983,6 +1362,7 @@ async def websocket_debate(
     audio_format: str = Query("binary"),
     context_id: Optional[str] = Query(None),
     is_panel_mode: bool = Query(False),
+    meeting_bridge: bool = Query(False),
 ):
     """Full-Duplex live audio & telemetry stream for Miles."""
     origin = websocket.headers.get("origin")
@@ -991,14 +1371,81 @@ async def websocket_debate(
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         return
 
-    install_stream_shutdown_filter()
     await websocket.accept()
+    bridge_session: Optional[MeetingSession] = None
+    if meeting_bridge:
+        try:
+            if not config.recall_audio_bridge_secret:
+                raise InvalidBridgeTicket("Meeting audio bridge is not configured.")
+            auth_message = await asyncio.wait_for(websocket.receive_json(), timeout=5)
+            if auth_message.get("type") != "meeting_bridge_auth" or not isinstance(auth_message.get("ticket"), str):
+                raise InvalidBridgeTicket("Missing meeting audio bridge ticket.")
+            claims = verify_bridge_ticket(auth_message["ticket"], config.recall_audio_bridge_secret)
+            user_id = claims["owner_id"]
+            bridge_session = await asyncio.to_thread(
+                get_meeting_scheduler().get_session, user_id, claims["meeting_id"]
+            )
+            if not bridge_session or bridge_session.status in {
+                MeetingStatus.COMPLETED, MeetingStatus.FAILED, MeetingStatus.CANCELLED
+            }:
+                raise InvalidBridgeTicket("Meeting session is unavailable.")
+        except (InvalidBridgeTicket, asyncio.TimeoutError, WebSocketDisconnect):
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+        except Exception:
+            logger.exception("Meeting audio bridge authentication failed.")
+            await websocket.close(code=status.WS_1011_INTERNAL_ERROR)
+            return
+    elif app.state.auth_test_bypass:
+        user_id = "00000000-0000-4000-8000-000000000001"
+    else:
+        if not config.supabase_url:
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+        try:
+            auth_message = await asyncio.wait_for(websocket.receive_json(), timeout=5)
+            if auth_message.get("type") != "authenticate" or not isinstance(auth_message.get("access_token"), str):
+                raise InvalidAccessToken("Missing WebSocket access token.")
+            verified_user = await asyncio.to_thread(
+                app.state.token_verifier.verify,
+                auth_message["access_token"],
+            )
+        except (AuthConfigurationError, InvalidAccessToken, asyncio.TimeoutError, WebSocketDisconnect):
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+        except Exception:
+            logger.exception("WebSocket authentication failed.")
+            await websocket.close(code=status.WS_1011_INTERNAL_ERROR)
+            return
+        user_id = verified_user.user_id
+
+    if bridge_session and bridge_session.meeting_id in SESSIONS:
+        await websocket.close(code=1008, reason="This meeting already has an active audio bridge.")
+        return
+    user_session_count = sum(owner_id == user_id for owner_id in SESSION_OWNERS.values())
+    if user_session_count >= MAX_ACTIVE_SESSIONS_PER_USER:
+        await websocket.close(code=1008, reason="This account already has an active debate session.")
+        return
+    if len(SESSIONS) >= MAX_ACTIVE_DEBATE_SESSIONS:
+        await websocket.close(code=1013, reason="The service is at its concurrent session limit. Try again shortly.")
+        return
+
+    install_stream_shutdown_filter()
+
+    if bridge_session:
+        scenario = bridge_session.persona_id
+        topic = bridge_session.topic
+        difficulty = bridge_session.difficulty
+        persona_tone = bridge_session.persona_tone
+        context_id = bridge_session.context_id
+        audio_format = "binary"
+        is_panel_mode = False
 
     # Load context dossier if provided
     context_dossier = None
     if context_id:
         store = get_context_store()
-        stored = store.get_context(context_id)
+        stored = await asyncio.to_thread(store.get_context, user_id, context_id)
         if stored:
             context_dossier = stored.to_dict()
             logger.info(
@@ -1011,14 +1458,15 @@ async def websocket_debate(
         scenario_id=scenario,
         topic=topic,
         difficulty=difficulty,
+        session_id=bridge_session.meeting_id if bridge_session else None,
         persona_tone=persona_tone,
         context_dossier=context_dossier,
         is_panel_mode=is_panel_mode,
     )
-    if len(SESSIONS) > 50:
-        oldest_key = next(iter(SESSIONS))
-        SESSIONS.pop(oldest_key, None)
     SESSIONS[engine.session_id] = engine
+    SESSION_OWNERS[engine.session_id] = user_id
+    report_persisted = False
+    meeting_leave_error: Optional[str] = None
 
     # Configure Rime TTS with persona-specific speaker and chosen model
     tts_client = RimeStreamingTTSClient(
@@ -1061,6 +1509,43 @@ async def websocket_debate(
 
     async def safe_send_bytes(data: bytes):
         await ws_channel.send_bytes(data)
+
+    async def fail_bridge_startup(message: str):
+        """Fail closed before opening the meeting audio stream if a dependency is unavailable."""
+        if bridge_session is None:
+            return
+
+        await safe_send_json({"type": "meeting_bridge_error", "message": message})
+        bridge_session.status = MeetingStatus.FAILED
+        bridge_session.error_message = message
+        bridge_session.ended_at = time.time()
+        bridge_session.recall_status = "bridge_start_failed"
+        bridge_session.recall_status_message = message
+        bridge_session.recall_status_updated_at = bridge_session.ended_at
+
+        try:
+            if bridge_session.recall_bot_id and not await RecallService().leave_call(bridge_session.recall_bot_id):
+                bridge_session.error_message += " Recall.ai did not confirm the leave request."
+        except Exception:
+            logger.exception("Could not ask Recall.ai to leave after meeting bridge startup failed.")
+            bridge_session.error_message += " Recall.ai leave could not be confirmed."
+        with contextlib.suppress(Exception):
+            await asyncio.to_thread(get_meeting_scheduler().store.save_session, bridge_session)
+
+        stop_event.set()
+        if stt_client:
+            with contextlib.suppress(Exception):
+                await stt_client.stop()
+        tts_client.cancel()
+        with contextlib.suppress(Exception):
+            await tts_client.close()
+        with contextlib.suppress(Exception):
+            await engine.llm_client.close()
+        if SESSIONS.get(engine.session_id) is engine:
+            SESSIONS.pop(engine.session_id, None)
+            SESSION_OWNERS.pop(engine.session_id, None)
+        with contextlib.suppress(Exception):
+            await websocket.close(code=status.WS_1011_INTERNAL_ERROR, reason="Meeting audio bridge startup failed.")
 
     async def emit_speech_intelligence():
         total = user_talk_time_sec + ai_talk_time_sec
@@ -1487,7 +1972,33 @@ async def websocket_debate(
         nonlocal stt_connected
         stt_connected = await stt_client.connect()
 
-    ws_channel.dispatch(connect_stt_background())
+    if bridge_session:
+        try:
+            stt_connected = await asyncio.wait_for(stt_client.connect(), timeout=20)
+        except asyncio.CancelledError:
+            await fail_bridge_startup("Meeting audio startup was interrupted, so Miles left the meeting.")
+            raise
+        except Exception:
+            logger.exception("Could not connect AssemblyAI before starting meeting %s.", bridge_session.meeting_id)
+        if not stt_connected:
+            await fail_bridge_startup("Miles could not connect to speech recognition and left the meeting.")
+            return
+
+        await safe_send_json({"type": "meeting_bridge_ready"})
+        try:
+            audio_ready = json.loads(await asyncio.wait_for(websocket.receive_text(), timeout=20))
+        except asyncio.CancelledError:
+            await fail_bridge_startup("Meeting audio startup was interrupted, so Miles left the meeting.")
+            raise
+        except (asyncio.TimeoutError, WebSocketDisconnect, json.JSONDecodeError):
+            await fail_bridge_startup("Meeting audio could not start, so Miles left the meeting.")
+            return
+        if not isinstance(audio_ready, dict) or audio_ready.get("type") != "meeting_bridge_audio_ready":
+            await fail_bridge_startup("Meeting audio could not start, so Miles left the meeting.")
+            return
+        await safe_send_json({"type": "meeting_bridge_started"})
+    else:
+        ws_channel.dispatch(connect_stt_background())
 
     # 3. Deliver opening salvo immediately
     opening_start = time.time()
@@ -1576,6 +2087,16 @@ async def websocket_debate(
                         if active_ai_turn_task and not active_ai_turn_task.done():
                             active_ai_turn_task.cancel()
 
+                        if bridge_session and bridge_session.recall_bot_id and bridge_session.status not in {
+                            MeetingStatus.COMPLETED, MeetingStatus.FAILED, MeetingStatus.CANCELLED
+                        }:
+                            try:
+                                if not await RecallService().leave_call(bridge_session.recall_bot_id):
+                                    meeting_leave_error = "Recall.ai did not confirm that Miles left the meeting."
+                            except Exception:
+                                logger.exception("Could not ask Recall.ai to leave meeting %s.", bridge_session.meeting_id)
+                                meeting_leave_error = "Recall.ai could not confirm that Miles left the meeting."
+
                         # Inform UI that GPT-4o is deeply analyzing the debate transcript
                         await safe_send_json({
                             "type": "debrief_status",
@@ -1585,6 +2106,31 @@ async def websocket_debate(
 
                         # Deep evaluation via GPT-4o
                         report = await engine.generate_llm_debrief_report()
+                        try:
+                            await asyncio.to_thread(get_debrief_store().save_report, report, user_id)
+                            report_persisted = True
+                            if bridge_session:
+                                bridge_session.debrief_report = report
+                                bridge_session.ended_at = time.time()
+                                bridge_session.duration_seconds = max(
+                                    0.0, bridge_session.ended_at - (bridge_session.started_at or bridge_session.created_at)
+                                )
+                                if bridge_session.status != MeetingStatus.FAILED:
+                                    if meeting_leave_error:
+                                        bridge_session.error_message = meeting_leave_error
+                                    else:
+                                        bridge_session.status = MeetingStatus.COMPLETED
+                                        bridge_session.error_message = None
+                                await asyncio.to_thread(
+                                    get_meeting_scheduler().store.save_session, bridge_session
+                                )
+                        except Exception:
+                            logger.exception("Could not persist completed debate report %s.", engine.session_id)
+                            await safe_send_json({
+                                "type": "debrief_status",
+                                "status": "error",
+                                "message": "The report is ready, but it could not be saved for later access.",
+                            })
                         await safe_send_json(report)
                         logger.info(f"[DebateEngine] Debate concluded. GPT-4o report sent for session {engine.session_id}.")
 
@@ -1625,4 +2171,41 @@ async def websocket_debate(
             await stt_client.stop()
         tts_client.cancel()
         await tts_client.close()
+        if bridge_session and not report_persisted:
+            try:
+                report = await engine.generate_llm_debrief_report()
+                await asyncio.to_thread(get_debrief_store().save_report, report, user_id)
+                stored_meeting = await asyncio.to_thread(
+                    get_meeting_scheduler().get_session, user_id, bridge_session.meeting_id
+                )
+                if stored_meeting:
+                    if stored_meeting.recall_bot_id and stored_meeting.status not in {
+                        MeetingStatus.COMPLETED, MeetingStatus.FAILED, MeetingStatus.CANCELLED
+                    }:
+                        try:
+                            if not await RecallService().leave_call(stored_meeting.recall_bot_id):
+                                meeting_leave_error = "Recall.ai did not confirm that Miles left the meeting."
+                        except Exception:
+                            logger.exception("Could not ask Recall.ai to leave after bridge disconnect for %s.", bridge_session.meeting_id)
+                            meeting_leave_error = "Recall.ai could not confirm that Miles left the meeting."
+                    stored_meeting.debrief_report = report
+                    stored_meeting.ended_at = stored_meeting.ended_at or time.time()
+                    stored_meeting.duration_seconds = max(
+                        0.0,
+                        stored_meeting.ended_at - (stored_meeting.started_at or stored_meeting.created_at),
+                    )
+                    if stored_meeting.status != MeetingStatus.FAILED:
+                        if meeting_leave_error:
+                            stored_meeting.error_message = meeting_leave_error
+                        else:
+                            stored_meeting.status = MeetingStatus.COMPLETED
+                            stored_meeting.error_message = None
+                    await asyncio.to_thread(get_meeting_scheduler().store.save_session, stored_meeting)
+                report_persisted = True
+            except Exception:
+                logger.exception("Could not finalize meeting debrief for %s.", bridge_session.meeting_id)
         await engine.llm_client.close()
+        if bridge_session or report_persisted or not getattr(engine, "_cached_report", None):
+            if SESSIONS.get(engine.session_id) is engine:
+                SESSIONS.pop(engine.session_id, None)
+                SESSION_OWNERS.pop(engine.session_id, None)

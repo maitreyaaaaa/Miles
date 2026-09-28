@@ -24,6 +24,24 @@ from src.debate.tactic_detector import RhetoricalTactic, TacticDetector
 logger = logging.getLogger(__name__)
 
 
+def _quote_matches_transcript(quote: Any, transcript_history: List[Dict[str, Any]]) -> bool:
+    """Accept a report quote only when its words occur in a captured user turn."""
+    import re
+
+    if not isinstance(quote, str):
+        return False
+    normalized_quote = " ".join(re.findall(r"[a-z0-9]+", quote.casefold()))
+    if len(normalized_quote.split()) < 3:
+        return False
+    for entry in transcript_history:
+        if str(entry.get("role", "")).casefold() != "user":
+            continue
+        normalized_turn = " ".join(re.findall(r"[a-z0-9]+", str(entry.get("content", "")).casefold()))
+        if normalized_quote in normalized_turn:
+            return True
+    return False
+
+
 class DebateEngine:
     """Adversarial Debate State Machine and Orchestrator."""
 
@@ -476,45 +494,9 @@ class DebateEngine:
                 "interrupted": False,
             })
 
-    def get_bookmarks_with_fallbacks(self) -> List[Dict[str, Any]]:
-        """Return real debate bookmarks or synthesized fallback moments if sparse."""
-        if self.bookmarks:
-            return sorted(self.bookmarks, key=lambda b: b.get("timestamp", 0))
-
-        total_time = max(18.0, round(time.time() - self.start_time, 1))
-        return [
-            {
-                "id": "bm-hes-1",
-                "type": "hesitation",
-                "timestamp": round(total_time * 0.18, 1),
-                "round": 1,
-                "label": "Hesitation (1.9s)",
-                "quote": "We... our growth trajectory is solid across enterprise segments.",
-                "why": "Paused 1.9s before addressing the adversary's unit economic question.",
-                "reframe": "State immediate facts: 'We closed 40 enterprise contracts with zero churn.'",
-            },
-            {
-                "id": "bm-cut-1",
-                "type": "ai_cut_in",
-                "timestamp": round(total_time * 0.45, 1),
-                "round": 2,
-                "label": "AI Cut-in (Buzzwords)",
-                "quote": "Cut the jargon. What is your actual net revenue retention?",
-                "why": "Adversary cut in after detecting evasive terminology.",
-                "reframe": "Eliminate marketing filler and answer with audited retention metrics.",
-            },
-            {
-                "id": "bm-brg-1",
-                "type": "barge_in",
-                "timestamp": round(total_time * 0.72, 1),
-                "round": 2,
-                "label": "Barge-in (420ms)",
-                "quote": "Let me correct you right there: our gross margins are 82%.",
-                "why": "User asserted tactical authority by interrupting the opponent's assertion.",
-                "reframe": "Decisive entry successfully reversed the interrogation burden.",
-                "latency_ms": 420.0,
-            },
-        ]
+    def get_bookmarks(self) -> List[Dict[str, Any]]:
+        """Return only moments observed and recorded during this session."""
+        return sorted(self.bookmarks, key=lambda bookmark: bookmark.get("timestamp", 0))
 
     def get_debrief_report(self) -> Dict[str, Any]:
         """Compile final debate debrief report (synchronous fallback or cached report)."""
@@ -534,25 +516,49 @@ class DebateEngine:
         report["scenario"] = self.scenario_id
         report["topic"] = self.topic or getattr(self.persona, "description", "Adversarial Sparring")
         report["difficulty"] = self.difficulty
-        report["rounds_completed"] = self.round_number
+        report["assessment_method"] = "heuristic"
+        report["overall_score"] = None
 
-        # Add realistic metrics structure
         user_turns = [h for h in self.history if h.get("role") == "user"]
         actual_user_turn_count = len(user_turns)
         actual_barge_ins = sum(1 for h in self.history if h.get("barge_in"))
+        report["rounds_completed"] = actual_user_turn_count
+        report["assessment_status"] = "insufficient_data" if not actual_user_turn_count else (
+            "limited_data" if actual_user_turn_count < 3 else "complete"
+        )
+        report["assessment_note"] = heuristic.get("verdict_description")
+        report["verdict"] = heuristic.get("verdict", "RULE-BASED REVIEW")
+        report["verdict_description"] = heuristic.get("verdict_description", "")
         report["metrics"]["turns_count"] = actual_user_turn_count
         report["metrics"]["barge_ins"] = actual_barge_ins
-        report["metrics"]["composure_score"] = int(round(self.scorer.score))
-        report["metrics"]["current_wpm"] = int(report["metrics"].get("avg_wpm", 145))
-        report["metrics"]["filler_word_count"] = report["metrics"].get("total_fillers", 0)
+        report["metrics"]["composure_score"] = int(round(self.scorer.score)) if self.scorer.history else None
+        report["metrics"]["current_wpm"] = report["metrics"].get("avg_wpm") if self.scorer.total_words else None
+        report["metrics"]["filler_word_count"] = heuristic.get("filler_count") if actual_user_turn_count else None
         report["metrics"]["detected_fillers"] = heuristic.get("detected_fillers", [])
         report["metrics"]["pressure_level"] = self.pressure_level
 
         report["chapters"] = heuristic.get("chapters", [])
+        report["key_weaknesses"] = heuristic.get("key_weaknesses", [])
+        report["coaching_tips"] = heuristic.get("coaching_tips", [])
         report["weakest_answer"] = heuristic.get("weakest_answer")
         report["strongest_answer"] = heuristic.get("strongest_answer")
         report["executive_reframes"] = heuristic.get("executive_reframes", [])
-        report["bookmarks"] = self.get_bookmarks_with_fallbacks()
+        if not actual_user_turn_count:
+            report["overall_score"] = None
+            report["verdict"] = "NOT ENOUGH SPEECH TO SCORE"
+            report["verdict_description"] = "No participant speech was transcribed, so no performance score or coaching report was produced."
+            report["assessment_note"] = report["verdict_description"]
+            report["assessment_status"] = "insufficient_data"
+            report["assessment_method"] = "none"
+            report["metrics"]["avg_wpm"] = None
+            report["metrics"]["total_fillers"] = None
+            report["key_weaknesses"] = []
+            report["coaching_tips"] = []
+            report["chapters"] = []
+            report["weakest_answer"] = None
+            report["strongest_answer"] = None
+            report["executive_reframes"] = []
+        report["bookmarks"] = self.get_bookmarks()
         report["has_context"] = bool(self.context_dossier)
         report["ground_truth_audit"] = self.fact_auditor.get_audit_summary()
         report["math_audit"] = self.math_auditor.get_summary()
@@ -577,6 +583,46 @@ class DebateEngine:
         actual_user_turn_count = len(user_turns)
         actual_barge_ins = sum(1 for h in self.history if h.get("barge_in"))
 
+        if not user_turns:
+            report = {
+                "type": "debate_report",
+                "session_id": self.session_id,
+                "scenario": self.scenario_id,
+                "topic": context["topic"],
+                "difficulty": self.difficulty,
+                "rounds_completed": 0,
+                "overall_score": None,
+                "verdict": "NOT ENOUGH SPEECH TO SCORE",
+                "verdict_description": "No participant speech was transcribed, so no performance score or coaching report was produced.",
+                "assessment_status": "insufficient_data",
+                "assessment_method": "none",
+                "assessment_note": "Check microphone access and transcription before starting another session.",
+                "metrics": {
+                    "composure_score": None,
+                    "current_wpm": None,
+                    "filler_word_count": None,
+                    "detected_fillers": [],
+                    "pressure_level": self.pressure_level,
+                    "turns_count": 0,
+                    "barge_ins": actual_barge_ins,
+                    "ai_interruptions": self.scorer.ai_interruption_count,
+                },
+                "key_weaknesses": [],
+                "coaching_tips": [],
+                "chapters": [],
+                "weakest_answer": None,
+                "strongest_answer": None,
+                "executive_reframes": [],
+                "bookmarks": self.get_bookmarks(),
+                "has_context": bool(self.context_dossier),
+                "ground_truth_audit": self.fact_auditor.get_audit_summary(),
+                "math_audit": self.math_auditor.get_summary(),
+                "is_panel_mode": self.is_panel_mode,
+                "panel": self.panel.to_dict() if self.is_panel_mode and self.panel else None,
+            }
+            self._cached_report = report
+            return report
+
         try:
             llm_eval = await self.llm_client.generate_json_debrief(
                 transcript_history=self.history,
@@ -587,22 +633,38 @@ class DebateEngine:
             logger.error(f"[DebateEngine] LLM debrief generation failed: {e}. Using fallback.", exc_info=True)
             llm_eval = self.llm_client._heuristic_debrief_fallback(self.history, context)
 
+        for field in ("weakest_answer", "strongest_answer"):
+            answer = llm_eval.get(field)
+            if isinstance(answer, dict) and not _quote_matches_transcript(answer.get("quote"), self.history):
+                llm_eval[field] = None
+        llm_eval["executive_reframes"] = [
+            reframe
+            for reframe in (llm_eval.get("executive_reframes") or [])
+            if isinstance(reframe, dict)
+            and _quote_matches_transcript(reframe.get("original_quote"), self.history)
+        ]
+
         # Baseline score calculation
-        overall_score = llm_eval.get("overall_score")
-        if overall_score is None:
-            overall_score = int(round(self.scorer.score))
-        overall_score = max(10, min(100, int(overall_score)))
-
-        composure_score = llm_eval.get("composure_score")
-        if composure_score is None:
-            composure_score = int(round(self.scorer.score))
-        composure_score = max(10, min(100, int(composure_score)))
-
-        cadence_wpm = llm_eval.get("cadence_wpm", 145)
-        cadence_wpm = max(70, min(210, int(cadence_wpm)))
-
-        filler_count = llm_eval.get("filler_count", 0)
-        detected_fillers = llm_eval.get("detected_fillers", [])
+        assessment_method = llm_eval.get("assessment_method", "heuristic")
+        raw_overall_score = llm_eval.get("overall_score") if assessment_method == "ai" else None
+        overall_score = (
+            max(10, min(100, int(raw_overall_score)))
+            if isinstance(raw_overall_score, (int, float))
+            else None
+        )
+        measured = self.scorer.generate_debrief_report()["metrics"]
+        composure_score = int(round(self.scorer.score)) if self.scorer.history else None
+        cadence_wpm = round(float(measured["avg_wpm"])) if self.scorer.total_words else None
+        filler_count = len(self.scorer.filler_words_detected) if self.scorer.history else None
+        detected_fillers = sorted(set(self.scorer.filler_words_detected))
+        assessment_status = "limited_data" if actual_user_turn_count < 3 else "complete"
+        assessment_note = (
+            f"Early read based on {actual_user_turn_count} spoken response(s). More responses make the argument assessment more reliable."
+            if assessment_status == "limited_data"
+            else "Performance score is an AI assessment. Speech cadence, filler counts, and response counts come from the captured session."
+        )
+        if assessment_method != "ai":
+            assessment_note = "The AI evaluator was unavailable. Only observed speech signals are shown; argument quality was not scored."
 
         report = {
             "type": "debate_report",
@@ -610,10 +672,13 @@ class DebateEngine:
             "scenario": self.scenario_id,
             "topic": self.topic or getattr(self.persona, "description", "Adversarial Sparring"),
             "difficulty": self.difficulty,
-            "rounds_completed": self.round_number,
+            "rounds_completed": actual_user_turn_count,
             "overall_score": overall_score,
             "verdict": llm_eval.get("verdict", "DEBATE CONCLUDED"),
             "verdict_description": llm_eval.get("verdict_description", ""),
+            "assessment_status": assessment_status,
+            "assessment_method": assessment_method,
+            "assessment_note": assessment_note,
             "metrics": {
                 "composure_score": composure_score,
                 "current_wpm": cadence_wpm,
@@ -624,13 +689,13 @@ class DebateEngine:
                 "barge_ins": actual_barge_ins,
                 "ai_interruptions": self.scorer.ai_interruption_count,
             },
-            "key_weaknesses": llm_eval.get("key_weaknesses", []),
-            "coaching_tips": llm_eval.get("coaching_tips", []),
-            "chapters": llm_eval.get("chapters", []),
+            "key_weaknesses": llm_eval.get("key_weaknesses") or [],
+            "coaching_tips": llm_eval.get("coaching_tips") or [],
+            "chapters": llm_eval.get("chapters") or [],
             "weakest_answer": llm_eval.get("weakest_answer"),
             "strongest_answer": llm_eval.get("strongest_answer"),
-            "executive_reframes": llm_eval.get("executive_reframes", []),
-            "bookmarks": self.get_bookmarks_with_fallbacks(),
+            "executive_reframes": llm_eval.get("executive_reframes") or [],
+            "bookmarks": self.get_bookmarks(),
             "has_context": bool(self.context_dossier),
             "ground_truth_audit": self.fact_auditor.get_audit_summary(),
             "math_audit": self.math_auditor.get_summary(),

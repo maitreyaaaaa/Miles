@@ -1,7 +1,7 @@
 import asyncio
 import pytest
 from src.context.analyzer import ContextDossier, NumericMetric
-from src.context.store import get_context_store
+from src.context.store import ContextStore
 from src.debate.llm_client import LLMClient
 from src.meeting.meeting_engine import MeetingEngineCoordinator
 from src.meeting.models import MeetingConfig, MeetingSession, MeetingStatus
@@ -10,7 +10,7 @@ from src.voice.rime_stream import RimeStreamingTTSClient
 
 
 @pytest.mark.asyncio
-async def test_meeting_engine_lifecycle_with_facts(tmp_path):
+async def test_meeting_engine_lifecycle_with_facts(tmp_path, monkeypatch):
     # 1. Setup sample context dossier
     dossier = ContextDossier(
         context_id="ctx_acme_123",
@@ -41,10 +41,13 @@ async def test_meeting_engine_lifecycle_with_facts(tmp_path):
         vulnerabilities=[{"metric": "churn", "note": "High enterprise churn"}],
         cross_exam_traps=["Why did CAC spike last quarter?"],
     )
-    store = get_context_store()
-    store.save_context(dossier)
+    owner_id = "00000000-0000-4000-8000-000000000999"
+    store = ContextStore(tmp_path / "contexts")
+    monkeypatch.setattr("src.meeting.meeting_engine.get_context_store", lambda: store)
+    store.save_context(owner_id, dossier)
 
     session = MeetingSession(
+        owner_id=owner_id,
         meet_url="https://meet.google.com/test-meet-123",
         context_id=dossier.context_id,
         persona_id="vc_pitch",

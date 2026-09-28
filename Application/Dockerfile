@@ -18,7 +18,6 @@ RUN pip install --no-cache-dir --upgrade pip && \
 
 COPY . .
 
-EXPOSE 8080
 EXPOSE 8000
 
 CMD ["python", "main.py"]

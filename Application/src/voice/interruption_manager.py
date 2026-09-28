@@ -14,7 +14,7 @@ class InterruptionManager:
     """Full-Duplex Dual-Direction Interruption Manager for Miles.
     
     Manages:
-    1. User Barge-in: Sub-100ms cut-off when user interrupts AI speech.
+    1. User Barge-in: Requests speech cancellation when the user interrupts AI speech.
     2. AI Interruption: Adversarial interjection when user hesitates or waffling on fluff.
     """
 

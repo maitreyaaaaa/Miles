@@ -1,16 +1,19 @@
 import { ArrowLeft, ArrowRight, CircleStop, FileCheck, Mic, MicOff, RotateCcw, ShieldCheck, Video } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MicrophoneStreamer, VoicePlayer } from "./audio";
+import type { RecordedTurnAudio } from "./audio";
 import { PreflightModal } from "./components/PreflightModal";
 import { DossierPreview } from "./components/DossierPreview";
 import { DominanceHUD } from "./components/DominanceHUD";
 import { DebriefModal } from "./components/DebriefModal";
 import { ContextUploadModal } from "./components/ContextUploadModal";
 import { MeetingSchedulerModal } from "./components/MeetingSchedulerModal";
+import { useAccessibleDialog } from "./hooks/useAccessibleDialog";
 import { MarketingLanding } from "./components/MarketingLanding";
 import RubberSegment from "./components/RubberSegment";
 import ShinyText from "./components/ShinyText";
 import DecryptedText from "./components/DecryptedText";
+import { apiFetch, BACKEND_URL, openAuthenticatedWebSocket } from "./api";
 import type {
   AiState,
   BattleDossier,
@@ -26,8 +29,6 @@ import type {
   TranscriptLine,
   TurnTelemetryEvent,
 } from "./types";
-
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL ?? "http://localhost:8000";
 
 const scenarios: { id: ScenarioId; label: string; opponent: string; topic: string; tag: string }[] = [
   {
@@ -159,17 +160,22 @@ function App() {
   const [personaTone, setPersonaTone] = useState<PersonaTone>("calm_ruthless");
   const [topic, setTopic] = useState("");
   const [connection, setConnection] = useState<"offline" | "connecting" | "live">("offline");
+  const [sessionError, setSessionError] = useState<string | null>(null);
+  const [micError, setMicError] = useState<string | null>(null);
   const [aiState, setAiState] = useState<AiState>("idle");
   const [micActive, setMicActive] = useState(false);
   const [micLevel, setMicLevel] = useState(0);
   const [isMicLocked, setIsMicLocked] = useState(false);
   const [transcripts, setTranscripts] = useState<TranscriptLine[]>([]);
+  const [recordedUserTurns, setRecordedUserTurns] = useState<RecordedTurnAudio[]>([]);
   const [telemetry, setTelemetry] = useState<TelemetryEvent>(initialTelemetry);
   const [lastInterruption, setLastInterruption] = useState<InterruptionEvent | null>(null);
   const [interruptionCount, setInterruptionCount] = useState(0);
   const [report, setReport] = useState<DebateReportEvent | null>(null);
+  const [reportSource, setReportSource] = useState<"live" | "meeting" | null>(null);
   const [debriefLoading, setDebriefLoading] = useState(false);
-  const [debriefMessage, setDebriefMessage] = useState("Analyzing debate transcript with GPT-4o...");
+  const [debriefError, setDebriefError] = useState<string | null>(null);
+  const [debriefMessage, setDebriefMessage] = useState("Preparing your sparring report...");
   const [statusText, setStatusText] = useState("ready");
   const [topicPrep, setTopicPrep] = useState<TopicPrep>({ status: "idle", word: "ready" });
   const [aiSubtitle, setAiSubtitle] = useState<{
@@ -226,6 +232,18 @@ function App() {
   const wsRef = useRef<WebSocket | null>(null);
   const playerRef = useRef<VoicePlayer | null>(null);
   const micRef = useRef<MicrophoneStreamer | null>(null);
+  const recordedUserTurnsRef = useRef<RecordedTurnAudio[]>([]);
+  const turnIndexRef = useRef(1);
+  const debriefPendingRef = useRef(false);
+  const reportReceivedRef = useRef(false);
+
+  const clearRecordedUserTurns = useCallback(() => {
+    for (const turn of recordedUserTurnsRef.current) {
+      URL.revokeObjectURL(turn.audioUrl);
+    }
+    recordedUserTurnsRef.current = [];
+    setRecordedUserTurns([]);
+  }, []);
 
   const activeScenario = useMemo(
     () => scenarios.find((item) => item.id === scenario) ?? scenarios[0],
@@ -234,7 +252,6 @@ function App() {
 
   const stopMic = useCallback(() => {
     micRef.current?.stop();
-    micRef.current = null;
     setMicActive(false);
     setMicLevel(0);
     setIsMicLocked(false);
@@ -242,9 +259,11 @@ function App() {
 
   const disconnect = useCallback(() => {
     stopMic();
+    micRef.current = null;
     wsRef.current?.close();
     wsRef.current = null;
-    playerRef.current?.stopImmediately();
+    void playerRef.current?.close();
+    playerRef.current = null;
     setIsMicLocked(false);
     setConnection("offline");
     setAiState("idle");
@@ -254,10 +273,13 @@ function App() {
   useEffect(() => {
     return () => {
       stopMic();
+      micRef.current = null;
       wsRef.current?.close();
       void playerRef.current?.close();
+      for (const turn of recordedUserTurnsRef.current) URL.revokeObjectURL(turn.audioUrl);
+      recordedUserTurnsRef.current = [];
     };
-  }, [stopMic]);
+  }, [clearRecordedUserTurns, stopMic]);
 
   useEffect(() => {
     const trimmed = topic.trim();
@@ -271,7 +293,7 @@ function App() {
 
     const timeout = window.setTimeout(async () => {
       try {
-        const response = await fetch(`${BACKEND_URL}/api/scenarios/custom`, {
+        const response = await apiFetch(`${BACKEND_URL}/api/scenarios/custom`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ topic: trimmed, difficulty, persona_tone: personaTone }),
@@ -323,6 +345,20 @@ function App() {
   const handleEvent = useCallback(async (event: ServerEvent) => {
     switch (event.type) {
       case "transcript":
+        if (event.role === "user" && event.is_final) {
+          const recordedTurn = micRef.current?.sealActiveTurn(event.text);
+          if (recordedTurn) {
+            const nextTurns = [...recordedUserTurnsRef.current, recordedTurn].slice(-20);
+            const retainedUrls = new Set(nextTurns.map((turn) => turn.audioUrl));
+            for (const previous of recordedUserTurnsRef.current) {
+              if (!retainedUrls.has(previous.audioUrl)) URL.revokeObjectURL(previous.audioUrl);
+            }
+            recordedUserTurnsRef.current = nextTurns;
+            setRecordedUserTurns(nextTurns);
+          }
+          turnIndexRef.current += 1;
+          micRef.current?.startTurn(turnIndexRef.current);
+        }
         setTranscripts((current) => [
           ...current,
           { ...event, id: crypto.randomUUID(), receivedAt: Date.now() },
@@ -382,13 +418,20 @@ function App() {
       case "debrief_status":
         if (event.status === "generating") {
           setDebriefLoading(true);
+          setDebriefError(null);
           if (event.message) setDebriefMessage(event.message);
         } else if (event.status === "error") {
+          debriefPendingRef.current = false;
           setDebriefLoading(false);
+          setDebriefError(event.message || "The debrief could not be generated. You can return to setup and try another session.");
         }
         break;
       case "debate_report":
+        debriefPendingRef.current = false;
+        reportReceivedRef.current = true;
         setDebriefLoading(false);
+        setDebriefError(null);
+        setReportSource("live");
         setReport(event);
         break;
       case "audio_chunk":
@@ -410,9 +453,17 @@ function App() {
     setConnection("connecting");
     setStatusText("connecting");
     setReport(null);
+    setReportSource(null);
+    setSessionError(null);
+    setMicError(null);
+    setDebriefError(null);
+    debriefPendingRef.current = false;
+    reportReceivedRef.current = false;
     setLastInterruption(null);
     setInterruptionCount(0);
     setTranscripts([]);
+    clearRecordedUserTurns();
+    turnIndexRef.current = 1;
     setAiSubtitle(null);
     setTelemetry(initialTelemetry);
     setSpeechIntel(null);
@@ -425,7 +476,9 @@ function App() {
     } catch {
       setStatusText("audio blocked");
     }
-    const socket = new WebSocket(buildWsUrl(sessionScenario, difficulty, topic, personaTone, activeContext?.context_id));
+    const socket = await openAuthenticatedWebSocket(
+      buildWsUrl(sessionScenario, difficulty, topic, personaTone, activeContext?.context_id),
+    );
     socket.binaryType = "arraybuffer";
     wsRef.current = socket;
 
@@ -453,15 +506,43 @@ function App() {
     socket.onerror = () => {
       setStatusText("connection error");
       setConnection("offline");
+      if (debriefPendingRef.current) {
+        debriefPendingRef.current = false;
+        setDebriefLoading(false);
+        setDebriefError("The connection ended before the debrief arrived. Return to setup and try another session.");
+      } else if (!reportReceivedRef.current) {
+        setSessionError("Miles could not connect to the voice service. Check the server and try again.");
+        setHasStarted(false);
+      }
     };
 
     socket.onclose = () => {
+      if (wsRef.current !== socket) return;
       stopMic();
       setConnection("offline");
       setAiState("idle");
       setStatusText("closed");
+      if (debriefPendingRef.current) {
+        debriefPendingRef.current = false;
+        setDebriefLoading(false);
+        setDebriefError("The connection ended before the debrief arrived. Return to setup and try another session.");
+      } else if (!reportReceivedRef.current) {
+        setSessionError("The voice session ended unexpectedly. Return to setup and try again.");
+        setHasStarted(false);
+      }
     };
-  }, [activeContext, difficulty, disconnect, handleEvent, personaTone, stopMic, topic]);
+  }, [activeContext, clearRecordedUserTurns, difficulty, disconnect, handleEvent, personaTone, stopMic, topic]);
+
+  const beginSession = async (selectedScenario: ScenarioId) => {
+    setHasStarted(true);
+    try {
+      await openSession(selectedScenario);
+    } catch (error) {
+      disconnect();
+      setHasStarted(false);
+      setSessionError(error instanceof Error ? error.message : "Could not start a sparring session.");
+    }
+  };
 
   const startDebate = async () => {
     const selectedScenario = topic.trim() ? "custom_debate" : scenario;
@@ -473,8 +554,7 @@ function App() {
       return;
     }
 
-    setHasStarted(true);
-    await openSession(selectedScenario);
+    await beginSession(selectedScenario);
   };
 
   const handlePreflightConfirm = async () => {
@@ -482,8 +562,7 @@ function App() {
     if (pendingStart) {
       setPendingStart(false);
       const selectedScenario = topic.trim() ? "custom_debate" : scenario;
-      setHasStarted(true);
-      await openSession(selectedScenario);
+      await beginSession(selectedScenario);
     }
   };
 
@@ -501,19 +580,41 @@ function App() {
       return;
     }
 
-    const mic = new MicrophoneStreamer();
+    const mic = micRef.current ?? new MicrophoneStreamer();
     micRef.current = mic;
-    await mic.start(socket, setMicLevel);
-    await playerRef.current?.ensureRunning();
-    setMicActive(true);
+    mic.startTurn(turnIndexRef.current);
+    try {
+      await mic.start(socket, setMicLevel);
+      await playerRef.current?.ensureRunning();
+      setMicError(null);
+      setMicActive(true);
+    } catch (error) {
+      mic.stop();
+      micRef.current = null;
+      setMicError(error instanceof Error ? error.message : "Microphone access failed.");
+      setMicActive(false);
+    }
   };
 
   const endDebate = () => {
+    const socket = wsRef.current;
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      setDebriefError("The voice connection is closed, so Miles cannot finish the report.");
+      return;
+    }
     stopMic();
     playerRef.current?.stopImmediately();
+    debriefPendingRef.current = true;
     setDebriefLoading(true);
-    setDebriefMessage("Analyzing debate transcript with GPT-4o...");
-    wsRef.current?.send(JSON.stringify({ type: "end_debate" }));
+    setDebriefError(null);
+    setDebriefMessage("Preparing your sparring report...");
+    try {
+      socket.send(JSON.stringify({ type: "end_debate" }));
+    } catch {
+      debriefPendingRef.current = false;
+      setDebriefLoading(false);
+      setDebriefError("The debrief request could not be sent. Return to setup and try another session.");
+    }
   };
 
   const returnHome = () => {
@@ -522,12 +623,34 @@ function App() {
     setDebriefLoading(false);
     setTranscripts([]);
     setReport(null);
+    setReportSource(null);
     setLastInterruption(null);
     setInterruptionCount(0);
     setAiSubtitle(null);
     setSpeechIntel(null);
     setTurnTelemetry(null);
+    setMicError(null);
+    setDebriefError(null);
+    clearRecordedUserTurns();
   };
+
+  const debriefErrorDialogRef = useAccessibleDialog<HTMLDivElement>(
+    !!debriefError && !debriefLoading && !report,
+    returnHome,
+  );
+  const debriefLoadingDialogRef = useAccessibleDialog<HTMLDivElement>(debriefLoading, () => {}, false);
+
+  const debriefDialog = report ? (
+    <DebriefModal
+      report={report}
+      recordedUserTurns={reportSource === "meeting" ? [] : recordedUserTurns}
+      backendUrl={BACKEND_URL}
+      onClose={() => {
+        setReport(null);
+        setReportSource(null);
+      }}
+    />
+  ) : null;
 
   if (!hasStarted) {
     if (currentView === "marketing") {
@@ -564,9 +687,11 @@ function App() {
               setShowContextModal(true);
             }}
             onViewDebrief={(debriefReport) => {
+              setReportSource("meeting");
               setReport(debriefReport);
             }}
           />
+          {debriefDialog}
         </main>
       );
     }
@@ -616,6 +741,8 @@ function App() {
             </button>
           </div>
         </header>
+
+        {sessionError && <p className="session-error-banner" role="alert">{sessionError}</p>}
 
         {/* ARENA INTRO BANNER */}
         <div className="arena-hero-banner">
@@ -832,9 +959,11 @@ function App() {
             setShowContextModal(true);
           }}
           onViewDebrief={(debriefReport) => {
+            setReportSource("meeting");
             setReport(debriefReport);
           }}
         />
+        {debriefDialog}
       </main>
     );
   }
@@ -863,6 +992,8 @@ function App() {
       </header>
 
       <section className="live-stage">
+        {sessionError && <p className="session-error-banner" role="alert">{sessionError}</p>}
+        {micError && <p className="session-error-banner" role="alert">{micError}</p>}
         <DominanceHUD intelligence={speechIntel} opponentName={activeScenario.opponent} />
         {lastInterruption && (
           <p className={`interruption-line ${lastInterruption.by === "ai" ? "ai-cut" : "user-barge"}`}>
@@ -941,17 +1072,26 @@ function App() {
         </button>
       </footer>
 
+      {debriefError && !debriefLoading && !report && (
+        <div className="modal-backdrop session-error-backdrop">
+          <section ref={debriefErrorDialogRef} className="debrief-loading-card session-error-card" role="alertdialog" aria-modal="true" aria-labelledby="debrief-error-title" tabIndex={-1}>
+            <h2 id="debrief-error-title">Debrief unavailable</h2>
+            <p className="debrief-loading-sub">{debriefError}</p>
+            <button className="debrief-button" type="button" onClick={returnHome}>Return to setup</button>
+          </section>
+        </div>
+      )}
+
       {debriefLoading && (
         <div className="modal-backdrop" role="presentation">
-          <section className="debrief-loading-card" role="dialog" aria-modal="true" aria-label="Evaluating debate">
+            <section ref={debriefLoadingDialogRef} className="debrief-loading-card" role="dialog" aria-modal="true" aria-label="Preparing sparring debrief" tabIndex={-1}>
             <div className="debrief-spinner" />
-            <h2>Evaluating Debate Transcript</h2>
-            <p className="debrief-loading-model">Powered by GPT-4o</p>
+            <h2>Preparing Sparring Debrief</h2>
             <p className="debrief-loading-sub">{debriefMessage}</p>
             <div className="debrief-loading-tags">
-              <span>Checking filler words</span>
+              <span>Checking captured speech</span>
               <span>•</span>
-              <span>Measuring cadence & pacing</span>
+              <span>Measuring cadence where available</span>
               <span>•</span>
               <span>Auditing argument defensibility</span>
             </div>
@@ -959,16 +1099,7 @@ function App() {
         </div>
       )}
 
-      {report && !debriefLoading && (
-        <DebriefModal
-          report={report}
-          telemetry={telemetry}
-          transcriptCount={transcripts.filter((line) => line.is_final).length}
-          interruptions={interruptionCount}
-          backendUrl={BACKEND_URL}
-          onClose={() => setReport(null)}
-        />
-      )}
+      {debriefDialog}
       <PreflightModal
         isOpen={showPreflight}
         onClose={handlePreflightClose}
@@ -993,6 +1124,7 @@ function App() {
           setShowContextModal(true);
         }}
         onViewDebrief={(debriefReport) => {
+          setReportSource("meeting");
           setReport(debriefReport);
         }}
       />

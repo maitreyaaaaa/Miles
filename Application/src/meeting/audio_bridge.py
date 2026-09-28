@@ -90,7 +90,7 @@ class MeetingAudioBridge:
                 if self.interruption_mgr.ai_interruption_active:
                     continue
 
-                # Energy-based VAD for instant sub-100ms barge-in detection
+                # Energy-based VAD for low-latency speech-onset detection
                 rms = calculate_pcm_rms(pcm_data)
                 if rms > self.rms_threshold:
                     if self.interruption_mgr.ai_is_speaking or self.interruption_mgr.ai_is_thinking:

@@ -1,5 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { ContextDossier, DebateReportEvent, MeetingSession } from '../types';
+import { apiFetch } from '../api';
+import { useGoogleIntegrations } from '../auth/GoogleIntegrationContext';
+import { useAccessibleDialog } from '../hooks/useAccessibleDialog';
 
 interface MeetingSchedulerModalProps {
   isOpen: boolean;
@@ -8,6 +11,29 @@ interface MeetingSchedulerModalProps {
   onOpenContextUpload: () => void;
   onViewDebrief: (report: DebateReportEvent) => void;
   backendUrl?: string;
+}
+
+function toDateTimeLocalValue(timestamp: number) {
+  const localDate = new Date(timestamp - new Date(timestamp).getTimezoneOffset() * 60_000);
+  return localDate.toISOString().slice(0, 16);
+}
+
+function isSupportedMeetingUrl(value: string) {
+  try {
+    const url = new URL(value.trim());
+    const host = url.hostname.toLowerCase().replace(/\.$/, '');
+    const supported = host === 'meet.google.com'
+      || host === 'zoom.us'
+      || host.endsWith('.zoom.us')
+      || host === 'teams.microsoft.com'
+      || host.endsWith('.teams.microsoft.com')
+      || host === 'teams.live.com'
+      || host === 'webex.com'
+      || host.endsWith('.webex.com');
+    return url.protocol === 'https:' && supported && !url.username && !url.password;
+  } catch {
+    return false;
+  }
 }
 
 export const MeetingSchedulerModal: React.FC<MeetingSchedulerModalProps> = ({
@@ -24,7 +50,10 @@ export const MeetingSchedulerModal: React.FC<MeetingSchedulerModalProps> = ({
   const [difficulty, setDifficulty] = useState('hard');
   const [maxDuration, setMaxDuration] = useState(1800);
   const [meetings, setMeetings] = useState<MeetingSession[]>([]);
+  const [isHistoryLoading, setIsHistoryLoading] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [isProvisioning, setIsProvisioning] = useState(false);
   const [actionLoadingId, setActionLoadingId] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [providerNotice, setProviderNotice] = useState<string | null>(null);
@@ -33,11 +62,18 @@ export const MeetingSchedulerModal: React.FC<MeetingSchedulerModalProps> = ({
   const [activeBotId, setActiveBotId] = useState<string | null>(null);
   const [activeBotStatus, setActiveBotStatus] = useState<string | null>(null);
   const [isBotPolling, setIsBotPolling] = useState(false);
+  const [recallRegion, setRecallRegion] = useState('ap-northeast-1');
   const [isScheduleMode, setIsScheduleMode] = useState(false);
   const [scheduledJoinAt, setScheduledJoinAt] = useState('');
+  const { calendarAccessToken, connectCalendar, connectingPurpose, integrationError, clearIntegrationError } = useGoogleIntegrations();
 
-  const pollIntervalRef = useRef<any>(null);
+  const historyPollIntervalRef = useRef<number | null>(null);
+  const botPollIntervalRef = useRef<number | null>(null);
   const apiBase = backendUrl.replace(/\/$/, '');
+  const busy = isLoading || isProvisioning || actionLoadingId !== null;
+  const dialogRef = useAccessibleDialog<HTMLDivElement>(isOpen, onClose, !busy);
+  const earliestJoin = toDateTimeLocalValue(Date.now() + 11 * 60_000);
+  const latestJoin = toDateTimeLocalValue(Date.now() + 30 * 24 * 60 * 60_000);
 
   // Detect Meeting Platform from URL
   const getPlatformInfo = (url: string) => {
@@ -51,6 +87,9 @@ export const MeetingSchedulerModal: React.FC<MeetingSchedulerModalProps> = ({
     if (lower.includes('meet.google.com')) {
       return { name: 'Google Meet', icon: '🎥', color: '#00ac47' };
     }
+    if (lower.includes('webex.com')) {
+      return { name: 'Webex', icon: '🎥', color: '#6f2da8' };
+    }
     return { name: 'Live Meeting', icon: '🌐', color: '#6366f1' };
   };
 
@@ -58,20 +97,30 @@ export const MeetingSchedulerModal: React.FC<MeetingSchedulerModalProps> = ({
 
   useEffect(() => {
     if (isOpen) {
-      fetchMeetings();
-      if (!meetUrl) {
-        handleGenerateLink();
+      void fetchMeetings(activeTab === 'history');
+      if (activeTab === 'history') {
+        historyPollIntervalRef.current = window.setInterval(() => void fetchMeetings(), 5000);
       }
     } else {
       stopBotPolling();
     }
-    return () => stopBotPolling();
-  }, [isOpen]);
+    return () => {
+      if (historyPollIntervalRef.current !== null) {
+        window.clearInterval(historyPollIntervalRef.current);
+        historyPollIntervalRef.current = null;
+      }
+    };
+  }, [isOpen, activeTab]);
+
+  useEffect(() => () => {
+    if (botPollIntervalRef.current !== null) window.clearInterval(botPollIntervalRef.current);
+    if (historyPollIntervalRef.current !== null) window.clearInterval(historyPollIntervalRef.current);
+  }, []);
 
   const stopBotPolling = () => {
-    if (pollIntervalRef.current) {
-      clearInterval(pollIntervalRef.current);
-      pollIntervalRef.current = null;
+    if (botPollIntervalRef.current !== null) {
+      window.clearInterval(botPollIntervalRef.current);
+      botPollIntervalRef.current = null;
     }
     setIsBotPolling(false);
   };
@@ -82,11 +131,10 @@ export const MeetingSchedulerModal: React.FC<MeetingSchedulerModalProps> = ({
 
     const poll = async () => {
       try {
-        const res = await fetch(`${apiBase}/api/meeting/bot/${botId}`);
+        const res = await apiFetch(`${apiBase}/api/meeting/bot/${botId}`);
         if (res.ok) {
           const data = await res.json();
-          const changes = data.status_changes || [];
-          const latestStatus = changes.length > 0 ? changes[changes.length - 1].code : 'ready';
+          const latestStatus = data.status || 'ready';
           setActiveBotStatus(latestStatus);
 
           if (['done', 'fatal', 'call_ended'].includes(latestStatus)) {
@@ -100,59 +148,90 @@ export const MeetingSchedulerModal: React.FC<MeetingSchedulerModalProps> = ({
     };
 
     poll();
-    pollIntervalRef.current = setInterval(poll, 3000);
+    // This endpoint reads database state updated by Recall's signed webhooks.
+    botPollIntervalRef.current = window.setInterval(() => void poll(), 5000);
   };
 
-  const fetchMeetings = async () => {
+  const fetchMeetings = async (showLoading = false) => {
+    if (showLoading) setIsHistoryLoading(true);
     try {
-      const res = await fetch(`${apiBase}/api/meetings`);
-      if (res.ok) {
-        const data = await res.json();
-        setMeetings(data.meetings || []);
-      }
+      const res = await apiFetch(`${apiBase}/api/meetings`);
+      if (!res.ok) throw new Error(`Unable to load sessions (${res.status}).`);
+      const data = await res.json();
+      setMeetings(data.meetings || []);
+      setHistoryError(null);
     } catch (err) {
       console.error('Failed to fetch meetings', err);
+      setHistoryError(err instanceof Error ? err.message : 'Unable to load sessions.');
+    } finally {
+      if (showLoading) setIsHistoryLoading(false);
     }
   };
 
   const handleGenerateLink = async () => {
+    setStatusMessage(null);
+    setIsProvisioning(true);
     try {
-      const res = await fetch(`${apiBase}/api/meeting/generate-link`);
-      if (res.ok) {
-        const data = await res.json();
-        setMeetUrl(data.meet_url);
-        setProviderNotice(data.provider_notice || null);
-      }
+      const res = await apiFetch(`${apiBase}/api/meeting/generate-link`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ access_token: calendarAccessToken || undefined }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Could not generate a meeting link.');
+      setMeetUrl(data.meet_url);
+      setProviderNotice(data.provider_notice || null);
     } catch (err) {
-      setMeetUrl('https://meet.google.com/abc-defg-hij');
-      setProviderNotice('Local simulation link. No external Google Meet room was provisioned.');
+      setStatusMessage(err instanceof Error ? err.message : 'Could not generate a meeting link.');
+    } finally {
+      setIsProvisioning(false);
     }
   };
 
   // Launch Recall.ai Cloud Bot into the call
   const handleLaunchRecallBot = async () => {
-    if (!meetUrl.trim()) {
-      setStatusMessage('Please enter a valid meeting URL (Google Meet, Zoom, Teams).');
+    if (!isSupportedMeetingUrl(meetUrl)) {
+      setStatusMessage('Enter a secure Google Meet, Zoom, Microsoft Teams, or Webex meeting URL.');
       return;
+    }
+    if (isScheduleMode) {
+      const selectedTime = scheduledJoinAt ? new Date(scheduledJoinAt).getTime() : NaN;
+      if (!Number.isFinite(selectedTime) || selectedTime <= Date.now() + 10 * 60_000) {
+        setStatusMessage('Choose a join time more than 10 minutes from now.');
+        return;
+      }
+      if (selectedTime > Date.now() + 30 * 24 * 60 * 60_000) {
+        setStatusMessage('Choose a join time within the next 30 days.');
+        return;
+      }
     }
 
     setIsLoading(true);
-    setStatusMessage('Deploying Miles bot via Recall.ai cloud (Tokyo ap-northeast-1)...');
+    setStatusMessage(isScheduleMode ? 'Scheduling Miles with Recall.ai…' : 'Connecting Miles to Recall.ai…');
 
     try {
-      const payload: any = {
+      const payload: {
+        meeting_url: string;
+        persona_id: string;
+        difficulty: string;
+        topic: string;
+        context_id: string | null;
+        max_duration_seconds: number;
+        join_at?: string;
+      } = {
         meeting_url: meetUrl.trim(),
         persona_id: personaId,
         difficulty: difficulty,
         topic: activeContext ? `Cross-Exam on ${activeContext.title}` : 'Voice Sparring',
         context_id: activeContext ? activeContext.context_id : null,
+        max_duration_seconds: maxDuration,
       };
 
       if (isScheduleMode && scheduledJoinAt) {
         payload.join_at = new Date(scheduledJoinAt).toISOString();
       }
 
-      const res = await fetch(`${apiBase}/api/meeting/bot/launch`, {
+      const res = await apiFetch(`${apiBase}/api/meeting/bot/launch`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -164,15 +243,16 @@ export const MeetingSchedulerModal: React.FC<MeetingSchedulerModalProps> = ({
       }
 
       const data = await res.json();
+      setRecallRegion(data.region || recallRegion);
       setActiveBotId(data.bot_id);
-      setActiveBotStatus(data.join_at ? 'scheduled' : 'joining_call');
+      setActiveBotStatus(data.recall_status || 'ready');
       setStatusMessage(
         data.join_at
-          ? `Bot successfully scheduled to join at ${new Date(data.join_at).toLocaleTimeString()}`
-          : `Bot dispatched (ID: ${data.bot_id}). Connecting to ${platformInfo.name}...`
+          ? `Recall accepted the bot schedule for ${new Date(data.join_at).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}. Waiting for its join status…`
+          : `Recall accepted the bot request for ${platformInfo.name}. Waiting for its join status…`
       );
 
-      if (data.bot_id && !data.join_at) {
+      if (data.bot_id) {
         startBotPolling(data.bot_id);
       }
       await fetchMeetings();
@@ -188,15 +268,16 @@ export const MeetingSchedulerModal: React.FC<MeetingSchedulerModalProps> = ({
     if (!activeBotId) return;
     setIsLoading(true);
     try {
-      const res = await fetch(`${apiBase}/api/meeting/bot/${activeBotId}/leave`, {
+      const res = await apiFetch(`${apiBase}/api/meeting/bot/${activeBotId}/leave`, {
         method: 'POST',
       });
-      if (res.ok) {
-        setStatusMessage('Bot has been instructed to leave the meeting call.');
-        setActiveBotStatus('call_ended');
-        stopBotPolling();
-        await fetchMeetings();
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.detail || 'Recall did not accept the leave request.');
       }
+      setStatusMessage('Recall accepted the request for Miles to leave the meeting.');
+      setActiveBotStatus('bot_leave_call_requested');
+      await fetchMeetings();
     } catch (err: any) {
       setStatusMessage(`Error dismissing bot: ${err.message}`);
     } finally {
@@ -207,7 +288,7 @@ export const MeetingSchedulerModal: React.FC<MeetingSchedulerModalProps> = ({
   const handleStopMeeting = async (meetingId: string) => {
     setActionLoadingId(meetingId);
     try {
-      const res = await fetch(`${apiBase}/api/meeting/${meetingId}/stop`, {
+      const res = await apiFetch(`${apiBase}/api/meeting/${meetingId}/stop`, {
         method: 'POST',
       });
       if (res.ok) {
@@ -216,10 +297,17 @@ export const MeetingSchedulerModal: React.FC<MeetingSchedulerModalProps> = ({
         if (data.debrief_report) {
           onViewDebrief(data.debrief_report);
           onClose();
+        } else if (data.status === 'cancelled') {
+          setStatusMessage('The scheduled Recall bot was cancelled.');
+        } else if (data.status === 'leave_requested') {
+          setStatusMessage('Recall accepted the leave request. The meeting status and debrief update after the bot disconnects.');
         }
+      } else {
+        const error = await res.json().catch(() => ({}));
+        setStatusMessage(error.detail || 'Could not stop the meeting bot. Try again.');
       }
     } catch (err) {
-      console.error('Failed to stop meeting', err);
+      setStatusMessage(err instanceof Error ? err.message : 'Could not stop the meeting. Try again.');
     } finally {
       setActionLoadingId(null);
     }
@@ -228,14 +316,17 @@ export const MeetingSchedulerModal: React.FC<MeetingSchedulerModalProps> = ({
   const handleViewDebrief = async (meetingId: string) => {
     setActionLoadingId(meetingId);
     try {
-      const res = await fetch(`${apiBase}/api/meeting/${meetingId}/debrief`);
+      const res = await apiFetch(`${apiBase}/api/meeting/${meetingId}/debrief`);
       if (res.ok) {
         const report = await res.json();
         onViewDebrief(report);
         onClose();
+      } else {
+        const error = await res.json().catch(() => ({}));
+        setStatusMessage(error.detail || 'Could not load this debrief. Try again.');
       }
     } catch (err) {
-      console.error('Failed to fetch debrief', err);
+      setStatusMessage(err instanceof Error ? err.message : 'Could not load this debrief. Try again.');
     } finally {
       setActionLoadingId(null);
     }
@@ -244,8 +335,16 @@ export const MeetingSchedulerModal: React.FC<MeetingSchedulerModalProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal-card meeting-modal-card" onClick={(e) => e.stopPropagation()}>
+    <div className="modal-backdrop meeting-modal-backdrop" role="presentation" onClick={() => { if (!busy) onClose(); }}>
+      <div
+        ref={dialogRef}
+        className="modal-card meeting-modal-card"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="meeting-modal-title"
+        tabIndex={-1}
+        onClick={(e) => e.stopPropagation()}
+      >
         {/* Header */}
         <div className="modal-header">
           <div className="modal-header-left">
@@ -254,93 +353,114 @@ export const MeetingSchedulerModal: React.FC<MeetingSchedulerModalProps> = ({
             </div>
             <div>
               <div className="meeting-title-row">
-                <h2 className="modal-title">Meeting Bot & Voice Sparring</h2>
+                <h2 id="meeting-modal-title" className="modal-title">Meeting Bot &amp; Voice Sparring</h2>
                 <span className="audio-only-badge" style={{ borderColor: platformInfo.color, color: platformInfo.color }}>
                   {platformInfo.name}
                 </span>
                 <span className="recall-workspace-tag">
-                  Recall.ai • Tokyo (ap-northeast-1)
+                  Recall.ai • {recallRegion}
                 </span>
               </div>
               <p className="modal-subtitle">
-                Deploy Miles into your Google Meet, Zoom, or Teams call to spar live, audit facts against your dossier, and produce an executive debrief.
+                Deploy Miles into your Google Meet, Zoom, Teams, or Webex call to spar live, audit facts against your dossier, and produce an executive debrief.
               </p>
             </div>
           </div>
-          <button className="modal-close-btn" onClick={onClose} aria-label="Close meeting modal">&times;</button>
+          <button type="button" className="modal-close-btn" onClick={onClose} aria-label="Close meeting modal" disabled={busy}>&times;</button>
         </div>
 
         {/* Tab switcher */}
-        <div className="meeting-tab-bar">
+      <div className="meeting-tab-bar" role="tablist" aria-label="Meeting sessions">
           <button
+            type="button"
             className={`meeting-tab-btn ${activeTab === 'launch' ? 'active' : ''}`}
             onClick={() => setActiveTab('launch')}
+            role="tab"
+            aria-selected={activeTab === 'launch'}
           >
             🤖 Launch & Schedule Bot
           </button>
           <button
+            type="button"
             className={`meeting-tab-btn ${activeTab === 'history' ? 'active' : ''}`}
             onClick={() => {
               setActiveTab('history');
-              fetchMeetings();
             }}
+            role="tab"
+            aria-selected={activeTab === 'history'}
           >
             📋 Sessions & Debriefs ({meetings.length})
           </button>
         </div>
 
         {activeTab === 'launch' ? (
-          <div className="meeting-tab-content">
+          <div className="meeting-tab-content" role="tabpanel">
             {/* Active Bot Status Banner (if running) */}
             {activeBotId && (
               <div className="active-bot-banner">
                 <div className="bot-banner-left">
-                  <span className={`status-dot-pulse ${activeBotStatus === 'in_call_recording' ? 'live' : 'pending'}`}></span>
+                <span className={`status-dot-pulse ${['in_call_recording', 'in_call_not_recording'].includes(activeBotStatus || '') ? 'live' : 'pending'}`}></span>
                   <div>
-                    <strong>Recall.ai Bot Active: <code>{activeBotId}</code></strong>
+                    <strong>{['in_call_recording', 'in_call_not_recording'].includes(activeBotStatus || '') ? 'Miles is in the meeting' : 'Recall.ai request accepted'}</strong>
                     <div className="bot-status-sub">
                       Status: <span className="bot-status-code">{activeBotStatus?.replace(/_/g, ' ').toUpperCase()}</span>
-                      {isBotPolling && ' • Polling live...'}
+                      {isBotPolling && ' • Waiting for webhook updates…'}
                     </div>
                   </div>
                 </div>
-                <button
+                {!['done', 'fatal', 'call_ended', 'bot_leave_call_requested'].includes(activeBotStatus || '') && <button
                   type="button"
                   className="danger-btn action-sm-btn"
                   onClick={handleLeaveRecallBot}
-                  disabled={isLoading}
+                  disabled={busy}
                 >
                   Disconnect Bot
-                </button>
+                </button>}
               </div>
             )}
 
             {/* Meet URL input */}
             <div className="form-group">
-              <label className="form-label">
-                Meeting Room URL (Google Meet, Zoom, or Microsoft Teams)
+              <label className="form-label" htmlFor="meeting-room-url">
+                Meeting Room URL (Google Meet, Zoom, Microsoft Teams, or Webex)
               </label>
               <div className="meet-url-input-row">
                 <input
                   type="text"
+                  id="meeting-room-url"
+                  autoComplete="url"
                   className="form-input meet-input"
-                  placeholder="https://meet.google.com/xyz or https://zoom.us/j/123"
+                  placeholder="https://meet.google.com/abc-defg-hij"
                   value={meetUrl}
-                  onChange={(e) => setMeetUrl(e.target.value)}
-                  disabled={isLoading}
+                  onChange={(e) => { setMeetUrl(e.target.value); setStatusMessage(null); }}
+                  aria-invalid={!!meetUrl.trim() && !isSupportedMeetingUrl(meetUrl)}
+                  disabled={busy}
                 />
                 <button
                   type="button"
                   className="secondary-btn instant-link-btn"
-                  onClick={handleGenerateLink}
-                  disabled={isLoading}
-                  title="Generate a fresh Google Meet link via Google Calendar"
+                  onClick={() => { clearIntegrationError(); void connectCalendar(); }}
+                  disabled={busy || connectingPurpose !== null}
+                  title="Give Miles access to create Meet links in your Google Calendar"
                 >
-                  ⚡ Provision Google Meet
+                  {calendarAccessToken ? 'Reconnect Calendar' : connectingPurpose === 'calendar' ? 'Connecting…' : 'Connect Calendar'}
+                </button>
+                <button
+                  type="button"
+                  className="secondary-btn instant-link-btn"
+                  onClick={() => void handleGenerateLink()}
+                  disabled={busy}
+                  title="Create a Google Calendar event with a Meet link when Calendar is connected"
+                >
+                  {isProvisioning ? 'Creating Meet link…' : 'Provision Meet'}
                 </button>
               </div>
+              {integrationError && <p className="integration-error" role="alert">{integrationError}</p>}
+              {!!meetUrl.trim() && !isSupportedMeetingUrl(meetUrl) && (
+                <p className="integration-error" role="alert">Enter a secure link from Google Meet, Zoom, Microsoft Teams, or Webex.</p>
+              )}
               {providerNotice && (
-                <div className="meeting-status-callout">
+                <div className="meeting-status-callout" role="status">
                   {providerNotice}
                 </div>
               )}
@@ -354,7 +474,7 @@ export const MeetingSchedulerModal: React.FC<MeetingSchedulerModalProps> = ({
                   className="form-select"
                   value={personaId}
                   onChange={(e) => setPersonaId(e.target.value)}
-                  disabled={isLoading}
+                  disabled={busy}
                 >
                   <option value="vc_pitch">VC Partner (Silicon Valley VC)</option>
                   <option value="salary_negotiation">VP of Engineering (Salary Negotiation)</option>
@@ -372,7 +492,7 @@ export const MeetingSchedulerModal: React.FC<MeetingSchedulerModalProps> = ({
                   className="form-select"
                   value={difficulty}
                   onChange={(e) => setDifficulty(e.target.value)}
-                  disabled={isLoading}
+                  disabled={busy}
                 >
                   <option value="easy">Easy (Constructive)</option>
                   <option value="medium">Medium (Challenging)</option>
@@ -398,7 +518,7 @@ export const MeetingSchedulerModal: React.FC<MeetingSchedulerModalProps> = ({
                   type="button"
                   className="text-link-btn"
                   onClick={onOpenContextUpload}
-                  disabled={isLoading}
+                  disabled={busy}
                 >
                   {activeContext ? 'Change Context' : '+ Attach Pitch Deck / CV'}
                 </button>
@@ -421,23 +541,26 @@ export const MeetingSchedulerModal: React.FC<MeetingSchedulerModalProps> = ({
                   type="checkbox"
                   checked={isScheduleMode}
                   onChange={(e) => setIsScheduleMode(e.target.checked)}
-                  disabled={isLoading}
+                  disabled={busy}
                 />
                 <span>Schedule bot for a future date/time</span>
               </label>
 
               {isScheduleMode && (
                 <div className="schedule-input-box">
-                  <label className="form-label">Target Join Time (Must be &gt;10 min in advance)</label>
+                  <label className="form-label" htmlFor="scheduled-join-time">Target Join Time (More than 10 minutes from now)</label>
                   <input
                     type="datetime-local"
+                    id="scheduled-join-time"
                     className="form-input"
                     value={scheduledJoinAt}
-                    onChange={(e) => setScheduledJoinAt(e.target.value)}
-                    disabled={isLoading}
+                    onChange={(e) => { setScheduledJoinAt(e.target.value); setStatusMessage(null); }}
+                    min={earliestJoin}
+                    max={latestJoin}
+                    disabled={busy}
                   />
                   <span className="schedule-hint">
-                    Recall.ai guarantees on-time machine warm-up when scheduled &gt;10 minutes ahead.
+                    Schedule at least 10 minutes ahead to give the bot time to warm up.
                   </span>
                 </div>
               )}
@@ -457,7 +580,7 @@ export const MeetingSchedulerModal: React.FC<MeetingSchedulerModalProps> = ({
                     type="button"
                     className={`duration-pill ${maxDuration === item.val ? 'active' : ''}`}
                     onClick={() => setMaxDuration(item.val)}
-                    disabled={isLoading}
+                    disabled={busy}
                   >
                     {item.label}
                   </button>
@@ -467,7 +590,7 @@ export const MeetingSchedulerModal: React.FC<MeetingSchedulerModalProps> = ({
 
             {/* Status message */}
             {statusMessage && (
-              <div className="meeting-status-callout">
+              <div className="meeting-status-callout" role="status" aria-live="polite">
                 {statusMessage}
               </div>
             )}
@@ -478,7 +601,7 @@ export const MeetingSchedulerModal: React.FC<MeetingSchedulerModalProps> = ({
                 type="button"
                 className="secondary-btn"
                 onClick={onClose}
-                disabled={isLoading}
+                disabled={busy}
               >
                 Close
               </button>
@@ -486,7 +609,7 @@ export const MeetingSchedulerModal: React.FC<MeetingSchedulerModalProps> = ({
                 type="button"
                 className="primary-btn launch-meet-btn"
                 onClick={handleLaunchRecallBot}
-                disabled={isLoading}
+                disabled={busy}
               >
                 {isLoading ? (
                   <>
@@ -499,8 +622,16 @@ export const MeetingSchedulerModal: React.FC<MeetingSchedulerModalProps> = ({
             </div>
           </div>
         ) : (
-          <div className="meeting-history-tab">
-            {meetings.length === 0 ? (
+          <div className="meeting-history-tab" role="tabpanel">
+            {historyError && (
+              <div className="meeting-status-callout history-error" role="alert">
+                <span>{historyError}</span>
+                <button type="button" className="text-link-btn" onClick={() => void fetchMeetings(true)}>Try again</button>
+              </div>
+            )}
+            {isHistoryLoading && meetings.length === 0 ? (
+              <div className="empty-history-state" role="status">Loading meeting sessions…</div>
+            ) : meetings.length === 0 && !historyError ? (
               <div className="empty-history-state">
                 <span className="empty-history-icon">📅</span>
                 <p>No meeting sessions or bot records yet.</p>
@@ -541,14 +672,23 @@ export const MeetingSchedulerModal: React.FC<MeetingSchedulerModalProps> = ({
                       {m.provider_mode && (
                         <span className="meta-item">Mode: {m.provider_mode.replace('_', ' ')}</span>
                       )}
+                      {m.recall_status && (
+                        <span className="meta-item">Recall: {m.recall_status.replace(/_/g, ' ')}</span>
+                      )}
                       {m.context_filename && (
                         <span className="meta-item">📄 {m.context_filename}</span>
                       )}
                       <span className="meta-item">⏱ {Math.round(m.duration_seconds)}s</span>
                       <span className="meta-item">
-                        📅 {new Date(m.created_at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        📅 {new Date(m.created_at * 1000).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}
                       </span>
                     </div>
+
+                    {(m.recall_status_message || m.error_message) && (
+                      <p className="meeting-status-callout" role="status">
+                        {m.error_message || m.recall_status_message}
+                      </p>
+                    )}
 
                     <div className="meeting-card-actions">
                       {m.status === 'in_call' && (
@@ -573,7 +713,18 @@ export const MeetingSchedulerModal: React.FC<MeetingSchedulerModalProps> = ({
                         </button>
                       )}
 
-                      {m.status === 'scheduled' && (
+                      {(m.status === 'scheduled' || m.status === 'connecting') && m.recall_bot_id && (
+                        <button
+                          type="button"
+                          className="danger-btn action-sm-btn"
+                          onClick={() => handleStopMeeting(m.meeting_id)}
+                          disabled={actionLoadingId === m.meeting_id}
+                        >
+                          {actionLoadingId === m.meeting_id ? 'Cancelling…' : m.status === 'scheduled' ? 'Cancel Scheduled Bot' : 'Stop Joining Bot'}
+                        </button>
+                      )}
+
+                      {m.status === 'scheduled' && !m.recall_bot_id && (
                         <button
                           type="button"
                           className="primary-btn action-sm-btn"
