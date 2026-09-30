@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 from uuid import UUID
 
 import jwt
@@ -29,7 +30,29 @@ class SupabaseTokenVerifier:
     _ALLOWED_ALGORITHMS = {"ES256", "RS256", "EdDSA"}
 
     def __init__(self, project_url: str, audience: str = "authenticated") -> None:
-        self.project_url = project_url.rstrip("/")
+        self.project_url = project_url.strip().rstrip("/")
+        if self.project_url:
+            try:
+                parsed = urlsplit(self.project_url)
+                valid = (
+                    parsed.scheme in {"http", "https"}
+                    and bool(parsed.hostname)
+                    and parsed.username is None
+                    and parsed.password is None
+                    and not (parsed.path or parsed.query or parsed.fragment)
+                    and not any(character.isspace() for character in self.project_url)
+                )
+                # Accessing port also rejects malformed or out-of-range ports.
+                parsed.port
+            except ValueError:
+                valid = False
+            if not valid:
+                # Do not echo a mistyped API key or credential-bearing URL.
+                raise AuthConfigurationError(
+                    "SUPABASE_URL must be a full HTTP(S) project URL, for example "
+                    "https://<project-ref>.supabase.co, without credentials or "
+                    "an /auth/v1 or /rest/v1 suffix."
+                ) from None
         self.issuer = f"{self.project_url}/auth/v1" if self.project_url else ""
         self.audience = audience
         jwks_url = f"{self.issuer}/.well-known/jwks.json" if self.issuer else ""
