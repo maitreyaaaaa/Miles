@@ -30,6 +30,13 @@ interface ContextUploadModalProps {
   backendUrl: string;
 }
 
+function documentErrorMessage(error: unknown, fallback: string) {
+  if (error instanceof Error && ["TimeoutError", "AbortError"].includes(error.name)) {
+    return "Document processing took too long. Try a smaller PDF or paste your notes instead.";
+  }
+  return error instanceof Error ? error.message : fallback;
+}
+
 export const ContextUploadModal: React.FC<ContextUploadModalProps> = ({
   isOpen,
   onClose,
@@ -52,10 +59,11 @@ export const ContextUploadModal: React.FC<ContextUploadModalProps> = ({
   const dialogRef = useAccessibleDialog<HTMLDivElement>(isOpen, onClose, !isLoading);
 
   useEffect(() => {
-    if (activeContext) {
-      setPreviewDossier(activeContext);
-    }
-  }, [activeContext]);
+    if (!isOpen) return;
+    setPreviewDossier(activeContext);
+    setTab(activeContext ? "preview" : "upload");
+    setErrorMsg(null);
+  }, [isOpen, activeContext]);
 
   useEffect(() => {
     if (isOpen) {
@@ -78,6 +86,7 @@ export const ContextUploadModal: React.FC<ContextUploadModalProps> = ({
       const resp = await apiFetch(`${backendUrl}/api/context/upload`, {
         method: "POST",
         body: formData,
+        signal: AbortSignal.timeout(90_000),
       });
 
       if (!resp.ok) {
@@ -88,8 +97,8 @@ export const ContextUploadModal: React.FC<ContextUploadModalProps> = ({
       const dossier: ContextDossier = await resp.json();
       setPreviewDossier(dossier);
       setTab("preview");
-    } catch (err: any) {
-      setErrorMsg(err.message || "Failed to process uploaded file");
+    } catch (err: unknown) {
+      setErrorMsg(documentErrorMessage(err, "Failed to process uploaded file"));
     } finally {
       setIsLoading(false);
     }
@@ -105,6 +114,7 @@ export const ContextUploadModal: React.FC<ContextUploadModalProps> = ({
     try {
       const resp = await apiFetch(`${backendUrl}/api/context/paste`, {
         method: "POST",
+        signal: AbortSignal.timeout(90_000),
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           text: pastedText.trim(),
@@ -120,8 +130,8 @@ export const ContextUploadModal: React.FC<ContextUploadModalProps> = ({
       const dossier: ContextDossier = await resp.json();
       setPreviewDossier(dossier);
       setTab("preview");
-    } catch (err: any) {
-      setErrorMsg(err.message || "Failed to analyze pasted context");
+    } catch (err: unknown) {
+      setErrorMsg(documentErrorMessage(err, "Failed to analyze pasted context"));
     } finally {
       setIsLoading(false);
     }
@@ -137,6 +147,7 @@ export const ContextUploadModal: React.FC<ContextUploadModalProps> = ({
     try {
       const resp = await apiFetch(`${backendUrl}/api/context/google-drive/import`, {
         method: "POST",
+        signal: AbortSignal.timeout(90_000),
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           url_or_id: driveUrl.trim(),
@@ -152,8 +163,8 @@ export const ContextUploadModal: React.FC<ContextUploadModalProps> = ({
       const dossier: ContextDossier = await resp.json();
       setPreviewDossier(dossier);
       setTab("preview");
-    } catch (err: any) {
-      setErrorMsg(err.message || "Failed to import from Google Drive");
+    } catch (err: unknown) {
+      setErrorMsg(documentErrorMessage(err, "Failed to import from Google Drive"));
     } finally {
       setIsLoading(false);
     }
@@ -254,9 +265,9 @@ export const ContextUploadModal: React.FC<ContextUploadModalProps> = ({
           {isLoading ? (
             <div className="context-loading-state">
               <Loader2 size={32} className="context-spinner" />
-              <h4>Auditing Document & Extracting Ground-Truth</h4>
+              <h4>Preparing your document</h4>
               <p>
-                Identifying core claims, categorizing financial & operational metrics, and compiling lethal cross-examination traps...
+                Extracting your claims, numbers, and useful context for this conversation…
               </p>
             </div>
           ) : tab === "upload" ? (
@@ -275,11 +286,12 @@ export const ContextUploadModal: React.FC<ContextUploadModalProps> = ({
                   type="file"
                   ref={fileInputRef}
                   style={{ display: "none" }}
-                  accept=".pdf,.docx,.doc,.txt,.md,.csv"
+                  accept=".pdf,.docx,.txt,.md,.csv"
+                  aria-label="Choose a pitch deck PDF or supporting document"
                   onChange={(e) => {
-                    if (e.target.files && e.target.files.length > 0) {
-                      void handleFileUpload(e.target.files[0]);
-                    }
+                    const file = e.target.files?.[0];
+                    e.target.value = "";
+                    if (file) void handleFileUpload(file);
                   }}
                 />
                 <div className="dropzone-icon">
@@ -487,6 +499,7 @@ Churn is 1.8% monthly."
             <button
               type="button"
               className="context-clear-btn"
+              disabled={isLoading}
               onClick={() => {
                 onClearContext();
                 setPreviewDossier(null);
@@ -499,13 +512,13 @@ Churn is 1.8% monthly."
           )}
 
           <div style={{ marginLeft: "auto", display: "flex", gap: "0.5rem" }}>
-            <button type="button" className="context-cancel-btn" onClick={onClose}>
+            <button type="button" className="context-cancel-btn" onClick={onClose} disabled={isLoading}>
               Cancel
             </button>
             {previewDossier && (
-              <button type="button" className="context-confirm-btn" onClick={confirmActiveContext}>
+              <button type="button" className="context-confirm-btn" onClick={confirmActiveContext} disabled={isLoading}>
                 <CheckCircle2 size={14} />
-                <span>Arm Adversary with this Context</span>
+                <span>Use this document</span>
               </button>
             )}
           </div>

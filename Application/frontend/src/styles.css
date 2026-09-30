@@ -2207,6 +2207,73 @@ p {
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
 }
 
+.preflight-submit-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+  transform: none;
+  box-shadow: none;
+}
+
+.session-preparation-modal { max-width: 560px; }
+.preflight-titles .session-preparation-step {
+  margin: 0 0 7px;
+  color: #647338;
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+.session-material-card {
+  display: grid;
+  gap: 16px;
+  padding: 20px;
+  border: 1px solid #dfe7cc;
+  border-radius: 12px;
+  background: #f8faf3;
+}
+.session-material-heading { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.session-material-heading svg { flex-shrink: 0; color: #586e24; }
+.session-material-heading h3 { margin: 0; font-size: 1rem; line-height: 1.4; }
+.session-material-optional { padding: 3px 8px; border-radius: 999px; background: #e9efdb; color: #566531; font-size: 0.68rem; }
+.session-material-card > p { margin: 0; font-size: 0.86rem; line-height: 1.6; color: #56604a; }
+.session-material-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  min-height: 44px;
+  padding: 10px 14px;
+  border: 1px solid #ced7b8;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #253117;
+  font-size: 0.84rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.session-material-button:hover { background: #edf3df; border-color: #80984e; }
+.session-material-button:focus-visible, .session-material-remove:focus-visible { outline: 2px solid #708b33; outline-offset: 3px; }
+.session-material-formats { color: #68725b; font-size: 0.75rem; line-height: 1.5; }
+.session-material-attached { display: grid; gap: 6px; padding: 14px; border-radius: 8px; background: #ffffff; border: 1px solid #dfe7cc; overflow-wrap: anywhere; }
+.session-material-attached > span { color: #647338; font-size: 0.71rem; }
+.session-material-attached strong { font-size: 0.95rem; }
+.session-material-attached small { color: #697161; font-size: 0.75rem; }
+.session-material-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.session-material-remove { min-height: 44px; padding: 10px; color: #8d3737; background: transparent; border: 0; font-size: 0.8rem; cursor: pointer; }
+.session-preparation-hint { margin: 0; color: #68705f; font-size: 0.8rem; line-height: 1.6; }
+.session-preparation-footer { gap: 12px; }
+
+@media (max-width: 600px) {
+  .preflight-overlay { padding: 12px; }
+  .preflight-modal { padding: 18px; max-height: calc(100dvh - 24px); }
+  .preflight-row { flex-wrap: wrap; }
+  .preflight-status-badge { max-width: 100%; white-space: normal; }
+  .session-material-card { padding: 16px; }
+  .session-preparation-footer { flex-direction: column-reverse; align-items: stretch; }
+  .session-preparation-footer button { justify-content: center; width: 100%; }
+  .context-modal-footer { flex-wrap: wrap; gap: 12px; }
+  .context-modal-footer > div { flex-wrap: wrap; justify-content: flex-end; }
+}
+
 /* ==========================================================================
    5-Vector Battle Dossier Preview (Production Design System)
    ========================================================================== */
@@ -3768,9 +3835,12 @@ p {
   padding: 12px 24px;
   background: #fafafa;
   border-bottom: 1px solid #f4f4f5;
+  overflow-x: auto;
+  flex-shrink: 0;
 }
 
 .context-tab {
+  flex-shrink: 0;
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -7861,6 +7931,9 @@ p {
 .arena-brand-link {
   display: flex;
   align-items: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
   cursor: pointer;
 }
 

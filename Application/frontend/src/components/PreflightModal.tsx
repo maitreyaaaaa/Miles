@@ -8,10 +8,11 @@ interface PreflightModalProps {
   isOpen: boolean;
   onClose: () => void;
   onConfirm?: () => void;
+  startingSession?: boolean;
   backendUrl?: string;
 }
 
-export const PreflightModal: React.FC<PreflightModalProps> = ({ isOpen, onClose, onConfirm, backendUrl = BACKEND_URL }) => {
+export const PreflightModal: React.FC<PreflightModalProps> = ({ isOpen, onClose, onConfirm, startingSession = false, backendUrl = BACKEND_URL }) => {
   const [micActive, setMicActive] = useState(false);
   const [micLevel, setMicLevel] = useState(0);
   const [speakerTested, setSpeakerTested] = useState(false);
@@ -94,6 +95,7 @@ export const PreflightModal: React.FC<PreflightModalProps> = ({ isOpen, onClose,
         updateRms();
       })
       .catch((e) => {
+        if (!active) return;
         setMicError(e instanceof Error && e.name === "NotAllowedError"
           ? "Microphone permission was denied. Allow microphone access to use voice sparring."
           : "The microphone could not be started. Check your browser and device settings.");
@@ -186,6 +188,7 @@ export const PreflightModal: React.FC<PreflightModalProps> = ({ isOpen, onClose,
               <ShieldCheck size={20} />
             </div>
             <div className="preflight-titles">
+              {startingSession && <p className="session-preparation-step">STEP 2 OF 2 · AUDIO CHECK</p>}
               <h2 id="preflight-title">Audio &amp; Voice Setup</h2>
               <p>Check your microphone, headphones, and voice connection</p>
             </div>
@@ -278,7 +281,7 @@ export const PreflightModal: React.FC<PreflightModalProps> = ({ isOpen, onClose,
             className="preflight-submit-btn"
             disabled={!micActive || !speakerTested || services !== "ready"}
           >
-            <CheckCircle2 size={16} /> Start practice
+            <CheckCircle2 size={16} /> {startingSession ? "Start practice" : "Finish audio check"}
           </button>
         </div>
       </div>

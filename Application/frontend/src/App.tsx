@@ -1,8 +1,10 @@
-import { ArrowLeft, ArrowRight, CircleStop, FileCheck, Mic, MicOff, RotateCcw, ShieldCheck, Video } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ArrowLeft, ArrowRight, CircleStop, Mic, MicOff, RotateCcw, ShieldCheck, Video } from "lucide-react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { MicrophoneStreamer, VoicePlayer } from "./audio";
 import type { RecordedTurnAudio } from "./audio";
 import { PreflightModal } from "./components/PreflightModal";
+import { SessionPreparationModal } from "./components/SessionPreparationModal";
+import { sessionPreparationReducer } from "./sessionPreparation";
 import { DossierPreview } from "./components/DossierPreview";
 import { DominanceHUD } from "./components/DominanceHUD";
 import { DebriefModal } from "./components/DebriefModal";
@@ -133,7 +135,7 @@ function App() {
     interrupted?: boolean;
   } | null>(null);
   const [showPreflight, setShowPreflight] = useState(initialIntent?.action === "audio");
-  const [pendingStart, setPendingStart] = useState(false);
+  const [preparationStep, prepareSession] = useReducer(sessionPreparationReducer, "idle");
   const [activeContext, setActiveContext] = useState<ContextDossier | null>(null);
   const [showContextModal, setShowContextModal] = useState(initialIntent?.action === "context");
   const [showMeetingModal, setShowMeetingModal] = useState(false);
@@ -555,22 +557,26 @@ function App() {
     const selectedScenario = topic.trim() ? "custom_debate" : scenario;
     setScenario(selectedScenario);
 
-    setPendingStart(true);
-    setShowPreflight(true);
+    prepareSession("prepare");
   };
 
   const handlePreflightConfirm = async () => {
     setShowPreflight(false);
-    if (pendingStart) {
-      setPendingStart(false);
+    if (preparationStep === "audio") {
+      prepareSession("confirm");
       const selectedScenario = topic.trim() ? "custom_debate" : scenario;
       await beginSession(selectedScenario);
     }
   };
 
   const handlePreflightClose = () => {
-    setPendingStart(false);
+    prepareSession("cancel");
     setShowPreflight(false);
+  };
+
+  const handleContextClose = () => {
+    setShowContextModal(false);
+    prepareSession("documentClosed");
   };
 
   const toggleMic = async () => {
@@ -652,6 +658,18 @@ function App() {
     />
   ) : null;
 
+  const sessionPreparationDialog = (
+    <SessionPreparationModal
+      isOpen={preparationStep === "materials"}
+      scenarioLabel={activeScenario.label}
+      activeContext={activeContext}
+      onAddContext={() => prepareSession("upload")}
+      onClearContext={() => setActiveContext(null)}
+      onContinue={() => prepareSession("continue")}
+      onClose={() => prepareSession("cancel")}
+    />
+  );
+
   if (!hasStarted) {
     if (currentView === "marketing") {
       return (
@@ -664,14 +682,15 @@ function App() {
           />
 
           <PreflightModal
-            isOpen={showPreflight}
+            isOpen={showPreflight || preparationStep === "audio"}
+            startingSession={preparationStep === "audio"}
             onClose={handlePreflightClose}
             onConfirm={handlePreflightConfirm}
             backendUrl={BACKEND_URL}
           />
           <ContextUploadModal
-            isOpen={showContextModal}
-            onClose={() => setShowContextModal(false)}
+            isOpen={showContextModal || preparationStep === "upload"}
+            onClose={handleContextClose}
             activeContext={activeContext}
             onSelectContext={(dossier) => setActiveContext(dossier)}
             onClearContext={() => setActiveContext(null)}
@@ -692,6 +711,7 @@ function App() {
             }}
           />}
           {debriefDialog}
+          {sessionPreparationDialog}
         </main>
       );
     }
@@ -710,9 +730,9 @@ function App() {
               <ArrowLeft size={15} />
               <span>Overview</span>
             </button>
-            <div className="arena-brand-link" onClick={handleBackToMarketing}>
+            <button type="button" className="arena-brand-link" onClick={handleBackToMarketing} aria-label="Return to Miles overview">
               <img src="/miles_home_logo.png" alt="Miles" className="arena-nav-logo" />
-            </div>
+            </button>
           </div>
           <div className="arena-nav-right">
             <button
@@ -722,14 +742,6 @@ function App() {
             >
               <ShieldCheck size={14} />
               <span>Audio Setup</span>
-            </button>
-            <button
-              type="button"
-              className={`arena-nav-pill ${activeContext ? "active-pill" : ""}`}
-              onClick={() => setShowContextModal(true)}
-            >
-              <FileCheck size={14} />
-              <span>{activeContext ? "Deck Armed" : "Attach Deck"}</span>
             </button>
             {GOOGLE_MEET_ENABLED && <button
               type="button"
@@ -930,21 +942,22 @@ function App() {
                   onClick={startDebate}
                   disabled={topicPrep.status === "thinking"}
                 >
-                  {topicPrep.status === "thinking" ? "Preparing..." : "Start debate"}
+                  {topicPrep.status === "thinking" ? "Preparing..." : "Start sparring session"}
                 </button>
             </div>
           </div>
         </section>
 
         <PreflightModal
-          isOpen={showPreflight}
+          isOpen={showPreflight || preparationStep === "audio"}
+          startingSession={preparationStep === "audio"}
           onClose={handlePreflightClose}
           onConfirm={handlePreflightConfirm}
           backendUrl={BACKEND_URL}
         />
         <ContextUploadModal
-          isOpen={showContextModal}
-          onClose={() => setShowContextModal(false)}
+          isOpen={showContextModal || preparationStep === "upload"}
+          onClose={handleContextClose}
           activeContext={activeContext}
           onSelectContext={(dossier) => setActiveContext(dossier)}
           onClearContext={() => setActiveContext(null)}
@@ -965,6 +978,7 @@ function App() {
           }}
         />}
         {debriefDialog}
+        {sessionPreparationDialog}
       </main>
     );
   }
@@ -1102,14 +1116,15 @@ function App() {
 
       {debriefDialog}
       <PreflightModal
-        isOpen={showPreflight}
+        isOpen={showPreflight || preparationStep === "audio"}
+        startingSession={preparationStep === "audio"}
         onClose={handlePreflightClose}
         onConfirm={handlePreflightConfirm}
         backendUrl={BACKEND_URL}
       />
       <ContextUploadModal
-        isOpen={showContextModal}
-        onClose={() => setShowContextModal(false)}
+        isOpen={showContextModal || preparationStep === "upload"}
+        onClose={handleContextClose}
         activeContext={activeContext}
         onSelectContext={(dossier) => setActiveContext(dossier)}
         onClearContext={() => setActiveContext(null)}
