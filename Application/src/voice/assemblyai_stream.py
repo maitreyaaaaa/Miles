@@ -98,6 +98,11 @@ class AssemblyAIStreamingClient:
         self._send_task: Optional[asyncio.Task] = None
         self._recv_task: Optional[asyncio.Task] = None
         self._speech_active = False
+        self._begin_event = asyncio.Event()
+        self._final_event = asyncio.Event()
+        self._audio_since_final = False
+        self.pending_transcript = ""
+        self._last_final_turn_order = None
 
     async def fetch_token(self) -> str:
         """Fetch short-lived streaming token from AssemblyAI v3."""
@@ -132,7 +137,7 @@ class AssemblyAIStreamingClient:
             if self.word_boost:
                 import urllib.parse
                 boost_param = urllib.parse.quote(json.dumps(self.word_boost))
-                ws_url += f"&word_boost={boost_param}&keyterms_prompt={boost_param}"
+                ws_url += f"&keyterms_prompt={boost_param}"
 
             logger.info("Connecting to AssemblyAI Universal-Streaming v3...")
             self._ws = await websockets.connect(
@@ -145,22 +150,29 @@ class AssemblyAIStreamingClient:
             self._stopping = False
             self._send_task = asyncio.create_task(self._send_loop())
             self._recv_task = asyncio.create_task(self._recv_loop())
+            await asyncio.wait_for(self._begin_event.wait(), timeout=10)
+            if not self._is_connected:
+                await self.stop()
+                return False
             logger.info("Successfully connected to AssemblyAI Universal-Streaming v3.")
             return True
-        except Exception as e:
-            logger.error(f"Failed to connect to AssemblyAI: {e}")
+        except Exception:
+            logger.error("Failed to connect to AssemblyAI.")
             self._is_connected = False
+            await self.stop()
             return False
 
     async def send_audio_chunk(self, chunk: bytes):
         """Enqueue PCM audio chunk from browser mic for transmission to AssemblyAI."""
         if self._is_connected and not self._stopping:
+            self._audio_since_final = True
             try:
                 self._send_queue.put_nowait(chunk)
             except asyncio.QueueFull:
                 # Drop oldest frame to avoid latency lag in live voice pipeline
                 try:
                     self._send_queue.get_nowait()
+                    self._send_queue.task_done()
                 except asyncio.QueueEmpty:
                     pass
                 self._send_queue.put_nowait(chunk)
@@ -170,9 +182,11 @@ class AssemblyAIStreamingClient:
         try:
             while not self._stopping and self._ws is not None:
                 chunk = await self._send_queue.get()
-                if self._ws is not None:
-                    await self._ws.send(chunk)
-                self._send_queue.task_done()
+                try:
+                    if self._ws is not None:
+                        await self._ws.send(chunk)
+                finally:
+                    self._send_queue.task_done()
         except asyncio.CancelledError:
             pass
         except Exception as e:
@@ -199,10 +213,20 @@ class AssemblyAIStreamingClient:
 
                 msg_type = (msg.get("type") or msg.get("message_type") or "").lower()
 
-                if msg_type == "turn":
+                if msg_type == "begin":
+                    self._begin_event.set()
+                elif msg_type == "turn":
                     transcript = msg.get("transcript", "").strip()
-                    is_final = bool(msg.get("end_of_turn")) or bool(msg.get("turn_is_formatted"))
+                    is_final = bool(msg.get("end_of_turn"))
+                    turn_order = msg.get("turn_order")
+                    if is_final and turn_order is not None and turn_order == self._last_final_turn_order:
+                        continue
+                    if is_final:
+                        self._last_final_turn_order = turn_order
                     confidence = float(msg.get("confidence", 0.95))
+                    self.pending_transcript = "" if is_final else transcript
+                    if is_final:
+                        self._audio_since_final = False
                     words = msg.get("words", [])
 
                     hesitations = detect_micro_hesitations(words, threshold_ms=750)
@@ -229,9 +253,12 @@ class AssemblyAIStreamingClient:
                         else:
                             if self.on_partial:
                                 self.on_partial(transcript, confidence)
+                    if is_final:
+                        self._final_event.set()
 
                 elif msg_type == "error":
-                    logger.error(f"AssemblyAI streaming error event: {msg}")
+                    logger.error("AssemblyAI reported a streaming error.")
+                    break
 
         except asyncio.CancelledError:
             pass
@@ -241,11 +268,30 @@ class AssemblyAIStreamingClient:
         finally:
             self._speech_active = False
             self._is_connected = False
+            self._begin_event.set()
             if self.on_disconnected and not self._stopping:
                 try:
                     self.on_disconnected()
                 except Exception as exc:
                     logger.debug(f"Error in on_disconnected callback: {exc}")
+
+    async def flush_final_turn(self, timeout: float = 5.0) -> bool:
+        """Drain captured audio and finish the last turn before report evaluation."""
+        if not self._is_connected or self._ws is None:
+            return not bool(self.pending_transcript)
+        if not self._audio_since_final and not self.pending_transcript:
+            return True
+        try:
+            await asyncio.wait_for(self._send_queue.join(), timeout=timeout)
+            if not self._audio_since_final and not self.pending_transcript:
+                return True
+            self._final_event.clear()
+            await asyncio.wait_for(self._ws.send(json.dumps({"type": "ForceEndpoint"})), timeout=timeout)
+            await asyncio.wait_for(self._final_event.wait(), timeout=timeout)
+            return True
+        except Exception:
+            logger.warning("Final transcription could not be confirmed before session end.")
+            return False
 
     async def stop(self):
         """Terminate streaming session cleanly."""

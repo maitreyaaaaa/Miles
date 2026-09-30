@@ -22,6 +22,7 @@ class AppConfig:
     supabase_url: str = os.getenv("SUPABASE_URL", "").rstrip("/")
     supabase_jwt_audience: str = os.getenv("SUPABASE_JWT_AUDIENCE", "authenticated")
     app_environment: str = os.getenv("APP_ENV", "development").strip().lower()
+    google_meet_enabled: bool = os.getenv("GOOGLE_MEET_ENABLED", "false").strip().lower() == "true"
 
     # PostgreSQL stores owner-scoped application data. Use the Supabase
     # transaction-pooler URL at runtime and keep migration credentials separate.

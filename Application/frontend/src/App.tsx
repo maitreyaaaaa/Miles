@@ -14,6 +14,9 @@ import RubberSegment from "./components/RubberSegment";
 import ShinyText from "./components/ShinyText";
 import DecryptedText from "./components/DecryptedText";
 import { apiFetch, BACKEND_URL, openAuthenticatedWebSocket } from "./api";
+import { GOOGLE_MEET_ENABLED } from "./features";
+import { scenarios } from "./scenarios";
+import { clearPracticeIntent, readPracticeIntent } from "./practiceIntent";
 import type {
   AiState,
   BattleDossier,
@@ -30,64 +33,6 @@ import type {
   TurnTelemetryEvent,
 } from "./types";
 
-const scenarios: { id: ScenarioId; label: string; opponent: string; topic: string; tag: string }[] = [
-  {
-    id: "vc_pitch",
-    label: "VC Pitch",
-    opponent: "Marcus Vance",
-    topic: "Defend your startup's market, moat, and unit economics.",
-    tag: "Startups",
-  },
-  {
-    id: "salary_negotiation",
-    label: "Salary Negotiation",
-    opponent: "Elena Rostova",
-    topic: "Negotiate compensation against a hardball VP of Talent.",
-    tag: "Career",
-  },
-  {
-    id: "hostile_cross_exam",
-    label: "Cross-Examination",
-    opponent: "DA Carter",
-    topic: "Handle sharp, aggressive questions without contradicting yourself.",
-    tag: "Legal",
-  },
-  {
-    id: "senior_interview",
-    label: "Systems Architecture",
-    opponent: "David Chen",
-    topic: "Defend distributed consensus and scale tradeoffs under scrutiny.",
-    tag: "Engineering",
-  },
-  {
-    id: "sales_objections",
-    label: "Enterprise Sales",
-    opponent: "Victoria Vance",
-    topic: "Overcome procurement pushback, ROI skepticism, and contract risk.",
-    tag: "Sales",
-  },
-  {
-    id: "media_crisis",
-    label: "Media Crisis",
-    opponent: "Sarah Jenkins",
-    topic: "Handle hostile investigative questioning on an executive leak.",
-    tag: "PR",
-  },
-  {
-    id: "hostile_boardroom",
-    label: "Activist Boardroom",
-    opponent: "Arthur Sterling",
-    topic: "Defend operating margins and strategy against activist investors.",
-    tag: "Leadership",
-  },
-  {
-    id: "custom_debate",
-    label: "Custom Topic",
-    opponent: "The Contrarian",
-    topic: "Pick any stance and defend it under real counter-pressure.",
-    tag: "Freeform",
-  },
-];
 
 const personaTones: { id: PersonaTone; label: string; desc: string }[] = [
   { id: "calm_ruthless", label: "Calm Ruthless", desc: "Icy clinical precision" },
@@ -154,14 +99,17 @@ function buildWsUrl(
 }
 
 function App() {
+  const [initialIntent] = useState(readPracticeIntent);
+  useEffect(() => { clearPracticeIntent(); }, []);
   const [hasStarted, setHasStarted] = useState(false);
-  const [scenario, setScenario] = useState<ScenarioId>("vc_pitch");
+  const [scenario, setScenario] = useState<ScenarioId>(initialIntent?.scenario ?? "vc_pitch");
   const [difficulty, setDifficulty] = useState<Difficulty>("hard");
   const [personaTone, setPersonaTone] = useState<PersonaTone>("calm_ruthless");
-  const [topic, setTopic] = useState("");
+  const [topic, setTopic] = useState(initialIntent?.topic ?? "");
   const [connection, setConnection] = useState<"offline" | "connecting" | "live">("offline");
   const [sessionError, setSessionError] = useState<string | null>(null);
   const [micError, setMicError] = useState<string | null>(null);
+  const [voiceAvailable, setVoiceAvailable] = useState(false);
   const [aiState, setAiState] = useState<AiState>("idle");
   const [micActive, setMicActive] = useState(false);
   const [micLevel, setMicLevel] = useState(0);
@@ -184,16 +132,16 @@ function App() {
     speaker?: string;
     interrupted?: boolean;
   } | null>(null);
-  const [showPreflight, setShowPreflight] = useState(false);
+  const [showPreflight, setShowPreflight] = useState(initialIntent?.action === "audio");
   const [pendingStart, setPendingStart] = useState(false);
   const [activeContext, setActiveContext] = useState<ContextDossier | null>(null);
-  const [showContextModal, setShowContextModal] = useState(false);
+  const [showContextModal, setShowContextModal] = useState(initialIntent?.action === "context");
   const [showMeetingModal, setShowMeetingModal] = useState(false);
   const [speechIntel, setSpeechIntel] = useState<SpeechIntelligenceEvent | null>(null);
   const [turnTelemetry, setTurnTelemetry] = useState<TurnTelemetryEvent | null>(null);
 
   const [currentView, setCurrentView] = useState<"marketing" | "arena">(() => {
-    return typeof window !== "undefined" && window.location.hash === "#arena" ? "arena" : "marketing";
+    return initialIntent || (typeof window !== "undefined" && window.location.hash === "#arena") ? "arena" : "marketing";
   });
 
   useEffect(() => {
@@ -230,6 +178,8 @@ function App() {
   };
 
   const wsRef = useRef<WebSocket | null>(null);
+  const startupTimerRef = useRef<number | null>(null);
+  const failureHandledRef = useRef(false);
   const playerRef = useRef<VoicePlayer | null>(null);
   const micRef = useRef<MicrophoneStreamer | null>(null);
   const recordedUserTurnsRef = useRef<RecordedTurnAudio[]>([]);
@@ -258,6 +208,8 @@ function App() {
   }, []);
 
   const disconnect = useCallback(() => {
+    if (startupTimerRef.current !== null) window.clearTimeout(startupTimerRef.current);
+    setVoiceAvailable(false);
     stopMic();
     micRef.current = null;
     wsRef.current?.close();
@@ -272,6 +224,7 @@ function App() {
 
   useEffect(() => {
     return () => {
+      if (startupTimerRef.current !== null) window.clearTimeout(startupTimerRef.current);
       stopMic();
       micRef.current = null;
       wsRef.current?.close();
@@ -344,6 +297,43 @@ function App() {
 
   const handleEvent = useCallback(async (event: ServerEvent) => {
     switch (event.type) {
+      case "session_ready": {
+        if (startupTimerRef.current !== null) window.clearTimeout(startupTimerRef.current);
+        setConnection("live");
+        setVoiceAvailable(true);
+        setStatusText("live");
+        const socket = wsRef.current;
+        if (socket?.readyState === WebSocket.OPEN) {
+          const mic = new MicrophoneStreamer();
+          micRef.current = mic;
+          mic.startTurn(turnIndexRef.current);
+          try {
+            await mic.start(socket, setMicLevel);
+            if (wsRef.current !== socket || socket.readyState !== WebSocket.OPEN) {
+              mic.stop();
+              return;
+            }
+            setMicActive(true);
+          } catch (error) {
+            mic.stop();
+            setMicError(error instanceof Error ? error.message : "Allow microphone access to practice.");
+          }
+        }
+        break;
+      }
+      case "session_error":
+        failureHandledRef.current = true;
+        if (startupTimerRef.current !== null) window.clearTimeout(startupTimerRef.current);
+        stopMic();
+        playerRef.current?.stopImmediately();
+        setVoiceAvailable(false);
+        setSessionError(event.message);
+        setStatusText("voice unavailable");
+        if (!event.recoverable) {
+          setHasStarted(false);
+          setConnection("offline");
+        }
+        break;
       case "transcript":
         if (event.role === "user" && event.is_final) {
           const recordedTurn = micRef.current?.sealActiveTurn(event.text);
@@ -446,7 +436,7 @@ function App() {
       case "pong":
         break;
     }
-  }, [activeScenario.opponent]);
+  }, [activeScenario.opponent, stopMic]);
 
   const openSession = useCallback(async (sessionScenario: ScenarioId) => {
     disconnect();
@@ -459,6 +449,8 @@ function App() {
     setDebriefError(null);
     debriefPendingRef.current = false;
     reportReceivedRef.current = false;
+    failureHandledRef.current = false;
+    setVoiceAvailable(false);
     setLastInterruption(null);
     setInterruptionCount(0);
     setTranscripts([]);
@@ -483,9 +475,14 @@ function App() {
     wsRef.current = socket;
 
     socket.onopen = () => {
-      setConnection("live");
-      setStatusText("live");
+      setStatusText("checking voice services");
     };
+    startupTimerRef.current = window.setTimeout(() => {
+      failureHandledRef.current = true;
+      setSessionError("Voice startup timed out. Check your connection and try again.");
+      setHasStarted(false);
+      disconnect();
+    }, 35_000);
 
     socket.onmessage = async (message) => {
       if (message.data instanceof ArrayBuffer) {
@@ -504,13 +501,15 @@ function App() {
     };
 
     socket.onerror = () => {
+      if (wsRef.current !== socket) return;
+      if (startupTimerRef.current !== null) window.clearTimeout(startupTimerRef.current);
       setStatusText("connection error");
       setConnection("offline");
       if (debriefPendingRef.current) {
         debriefPendingRef.current = false;
         setDebriefLoading(false);
         setDebriefError("The connection ended before the debrief arrived. Return to setup and try another session.");
-      } else if (!reportReceivedRef.current) {
+      } else if (!reportReceivedRef.current && !failureHandledRef.current) {
         setSessionError("Miles could not connect to the voice service. Check the server and try again.");
         setHasStarted(false);
       }
@@ -518,6 +517,8 @@ function App() {
 
     socket.onclose = () => {
       if (wsRef.current !== socket) return;
+      if (startupTimerRef.current !== null) window.clearTimeout(startupTimerRef.current);
+      setVoiceAvailable(false);
       stopMic();
       setConnection("offline");
       setAiState("idle");
@@ -526,7 +527,7 @@ function App() {
         debriefPendingRef.current = false;
         setDebriefLoading(false);
         setDebriefError("The connection ended before the debrief arrived. Return to setup and try another session.");
-      } else if (!reportReceivedRef.current) {
+      } else if (!reportReceivedRef.current && !failureHandledRef.current) {
         setSessionError("The voice session ended unexpectedly. Return to setup and try again.");
         setHasStarted(false);
       }
@@ -545,16 +546,17 @@ function App() {
   };
 
   const startDebate = async () => {
+    if (scenario === "custom_debate" && !topic.trim()) {
+      setSessionError("Add a topic for your custom conversation before starting.");
+      document.getElementById("custom-topic")?.focus();
+      return;
+    }
+    setSessionError(null);
     const selectedScenario = topic.trim() ? "custom_debate" : scenario;
     setScenario(selectedScenario);
 
-    if (sessionStorage.getItem("miles_preflight_passed") !== "true") {
-      setPendingStart(true);
-      setShowPreflight(true);
-      return;
-    }
-
-    await beginSession(selectedScenario);
+    setPendingStart(true);
+    setShowPreflight(true);
   };
 
   const handlePreflightConfirm = async () => {
@@ -572,6 +574,7 @@ function App() {
   };
 
   const toggleMic = async () => {
+    if (!voiceAvailable) return;
     const socket = wsRef.current;
     if (!socket || socket.readyState !== WebSocket.OPEN) return;
 
@@ -645,10 +648,7 @@ function App() {
       report={report}
       recordedUserTurns={reportSource === "meeting" ? [] : recordedUserTurns}
       backendUrl={BACKEND_URL}
-      onClose={() => {
-        setReport(null);
-        setReportSource(null);
-      }}
+      onClose={returnHome}
     />
   ) : null;
 
@@ -677,7 +677,7 @@ function App() {
             onClearContext={() => setActiveContext(null)}
             backendUrl={BACKEND_URL}
           />
-          <MeetingSchedulerModal
+          {GOOGLE_MEET_ENABLED && <MeetingSchedulerModal
             isOpen={showMeetingModal}
             onClose={() => setShowMeetingModal(false)}
             activeContext={activeContext}
@@ -690,7 +690,7 @@ function App() {
               setReportSource("meeting");
               setReport(debriefReport);
             }}
-          />
+          />}
           {debriefDialog}
         </main>
       );
@@ -731,14 +731,14 @@ function App() {
               <FileCheck size={14} />
               <span>{activeContext ? "Deck Armed" : "Attach Deck"}</span>
             </button>
-            <button
+            {GOOGLE_MEET_ENABLED && <button
               type="button"
               className="arena-nav-pill meet-pill"
               onClick={() => setShowMeetingModal(true)}
             >
               <Video size={14} />
               <span>Google Meet</span>
-            </button>
+            </button>}
           </div>
         </header>
 
@@ -795,6 +795,7 @@ function App() {
               >
                 <input
                   id="custom-topic"
+                  maxLength={2000}
                   value={topic}
                   onChange={(event) => {
                     setTopic(event.target.value);
@@ -949,7 +950,7 @@ function App() {
           onClearContext={() => setActiveContext(null)}
           backendUrl={BACKEND_URL}
         />
-        <MeetingSchedulerModal
+        {GOOGLE_MEET_ENABLED && <MeetingSchedulerModal
           isOpen={showMeetingModal}
           onClose={() => setShowMeetingModal(false)}
           activeContext={activeContext}
@@ -962,7 +963,7 @@ function App() {
             setReportSource("meeting");
             setReport(debriefReport);
           }}
-        />
+        />}
         {debriefDialog}
       </main>
     );
@@ -1050,7 +1051,7 @@ function App() {
               : "Start microphone"
           }
           onClick={toggleMic}
-          disabled={connection !== "live" || debriefLoading || isMicLocked}
+          disabled={connection !== "live" || !voiceAvailable || debriefLoading || isMicLocked}
         >
           {isMicLocked ? <MicOff size={20} /> : micActive ? <MicOff size={20} /> : <Mic size={20} />}
           <span style={{ "--level": isMicLocked ? 0 : micLevel } as React.CSSProperties} />
@@ -1068,7 +1069,7 @@ function App() {
           disabled={connection !== "live" || debriefLoading}
         >
           <CircleStop size={18} aria-hidden="true" />
-          {debriefLoading ? "Analyzing..." : "Debrief"}
+          {debriefLoading ? "Preparing report…" : "Finish & get report"}
         </button>
       </footer>
 
@@ -1114,7 +1115,7 @@ function App() {
         onClearContext={() => setActiveContext(null)}
         backendUrl={BACKEND_URL}
       />
-      <MeetingSchedulerModal
+      {GOOGLE_MEET_ENABLED && <MeetingSchedulerModal
         isOpen={showMeetingModal}
         onClose={() => setShowMeetingModal(false)}
         activeContext={activeContext}
@@ -1127,7 +1128,7 @@ function App() {
           setReportSource("meeting");
           setReport(debriefReport);
         }}
-      />
+      />}
     </main>
   );
 }

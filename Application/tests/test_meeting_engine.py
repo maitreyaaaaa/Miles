@@ -56,7 +56,7 @@ async def test_meeting_engine_lifecycle_with_facts(tmp_path, monkeypatch):
     )
 
     mock_bot = MockMeetingBotProvider()
-    tts_client = RimeStreamingTTSClient(api_key=None)  # Uses system/offline fallback
+    tts_client = RimeStreamingTTSClient(api_key=None, allow_fallback=True)  # Explicit local simulator
     coordinator = MeetingEngineCoordinator(
         session=session,
         bot_provider=mock_bot,

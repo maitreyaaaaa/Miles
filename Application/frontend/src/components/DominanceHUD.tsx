@@ -16,7 +16,7 @@ export const DominanceHUD: React.FC<DominanceHUDProps> = ({ intelligence, oppone
       <div className="dominance-hud-row">
         <span className="dominance-hud-speaker">
           <span className="dominance-dot user" />
-          <span>You: <strong style={{ color: "#ffffff" }}>{userPct}%</strong></span>
+          <span>You: <strong>{userPct}%</strong></span>
         </span>
         {hasHesitation && (
           <span className="dominance-hesitation-badge">
@@ -24,7 +24,7 @@ export const DominanceHUD: React.FC<DominanceHUDProps> = ({ intelligence, oppone
           </span>
         )}
         <span className="dominance-hud-speaker">
-          <span>{opponentName}: <strong style={{ color: "#ffffff" }}>{aiPct}%</strong></span>
+          <span>{opponentName}: <strong>{aiPct}%</strong></span>
           <span className="dominance-dot ai" />
         </span>
       </div>

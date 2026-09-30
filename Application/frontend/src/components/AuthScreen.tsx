@@ -1,7 +1,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import { supabase } from "../auth/client";
 
-export function AuthScreen({ configured, initialError = "" }: { configured: boolean; initialError?: string }) {
+export function AuthScreen({ configured, initialError = "", onBack }: { configured: boolean; initialError?: string; onBack?: () => void }) {
   const [email, setEmail] = useState("");
   const [code, setCode] = useState("");
   const [awaitingCode, setAwaitingCode] = useState(false);
@@ -77,6 +77,7 @@ export function AuthScreen({ configured, initialError = "" }: { configured: bool
   return (
     <main className="auth-screen">
       <section className="auth-card" aria-labelledby="auth-title">
+        {onBack && <button type="button" className="auth-back-button" onClick={onBack}>← Back to Miles</button>}
         <div className="auth-brand">MILES</div>
         <p className="auth-eyebrow">VOICE SPARRING</p>
         <h1 id="auth-title">Sign in to continue</h1>
@@ -84,7 +85,7 @@ export function AuthScreen({ configured, initialError = "" }: { configured: bool
 
         {!configured ? (
           <div className="auth-setup-message" role="status">
-            Sign-in is not configured yet. Set the Supabase frontend and backend values, then enable Google and email OTP in Supabase Auth.
+            Sign-in is temporarily unavailable. Please try again later.
           </div>
         ) : (
           <>

@@ -1,7 +1,7 @@
-import { defineConfig } from "vite";
+import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
 
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   plugins: [react()],
   server: {
     host: "127.0.0.1",
@@ -11,7 +11,7 @@ export default defineConfig({
     rollupOptions: {
       input: {
         app: "index.html",
-        meetingBridge: "meeting-bridge.html",
+        ...(loadEnv(mode, ".", "VITE_").VITE_GOOGLE_MEET_ENABLED === "true" ? { meetingBridge: "meeting-bridge.html" } : {}),
       },
       output: {
         manualChunks(id) {
@@ -23,4 +23,4 @@ export default defineConfig({
       },
     },
   },
-});
+}));

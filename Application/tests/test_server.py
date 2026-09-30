@@ -179,6 +179,7 @@ def test_meeting_bridge_websocket_authenticates_and_saves_debrief(monkeypatch):
         expires_at=int(time.time()) + 300,
     )
     monkeypatch.setattr(server, "config", SimpleNamespace(
+        google_meet_enabled=True,
         recall_audio_bridge_secret=secret,
         assemblyai_api_key="",
         sample_rate=16000,
@@ -222,6 +223,9 @@ def test_meeting_bridge_websocket_authenticates_and_saves_debrief(monkeypatch):
 
         async def send_audio_chunk(self, _chunk):
             pass
+
+        async def flush_final_turn(self):
+            return True
 
     leave_requests = []
 
@@ -287,6 +291,7 @@ def test_meeting_bridge_fails_closed_when_speech_recognition_is_unavailable(monk
         expires_at=int(time.time()) + 300,
     )
     monkeypatch.setattr(server, "config", SimpleNamespace(
+        google_meet_enabled=True,
         recall_audio_bridge_secret=secret,
         assemblyai_api_key="test-assembly-key",
         sample_rate=16000,

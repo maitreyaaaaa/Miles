@@ -627,7 +627,6 @@ class DebateEngine:
             llm_eval = await self.llm_client.generate_json_debrief(
                 transcript_history=self.history,
                 context=context,
-                model="openai/gpt-4o",
             )
         except Exception as e:
             logger.error(f"[DebateEngine] LLM debrief generation failed: {e}. Using fallback.", exc_info=True)

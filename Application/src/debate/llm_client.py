@@ -128,7 +128,7 @@ class LLMClient:
                         "HTTP-Referer": "https://github.com/miles-ai",
                         "X-Title": "Miles Voice AI",
                     }
-                self._openai_client = AsyncOpenAI(**client_kwargs)
+                self._openai_client = AsyncOpenAI(**client_kwargs, timeout=20.0, max_retries=1)
                 self.model = self.model or config.openai_model
             except Exception as e:
                 logger.warning(f"Failed to initialize OpenAI client: {e}")
@@ -278,9 +278,8 @@ class LLMClient:
                 if chunk.choices and chunk.choices[0].delta.content:
                     yield chunk.choices[0].delta.content
         except Exception as e:
-            logger.error(f"OpenAI stream error: {e}. Falling back to heuristic mock.")
-            async for token in self._stream_heuristic_mock(messages, system_prompt):
-                yield token
+            logger.error("OpenAI conversation request failed (%s).", type(e).__name__)
+            raise RuntimeError("The conversation service is unavailable. Please try again later.") from None
         finally:
             close_stream = getattr(stream, "close", None)
             if close_stream:
@@ -314,9 +313,8 @@ class LLMClient:
                 if chunk.text:
                     yield chunk.text
         except Exception as e:
-            logger.error(f"Gemini stream error: {e}. Falling back to heuristic mock.")
-            async for token in self._stream_heuristic_mock(messages, system_prompt):
-                yield token
+            logger.error("Gemini conversation request failed (%s).", type(e).__name__)
+            raise RuntimeError("The conversation service is unavailable. Please try again later.") from None
 
     async def _stream_anthropic(
         self,
@@ -358,9 +356,7 @@ class LLMClient:
                     if resp.status_code != 200:
                         err_body = await resp.aread()
                         logger.error(f"Anthropic API error {resp.status_code}: {err_body.decode(errors='ignore')}")
-                        async for token in self._stream_heuristic_mock(messages, system_prompt):
-                            yield token
-                        return
+                        raise RuntimeError("The conversation service is unavailable. Please try again later.")
 
                     async for line in resp.aiter_lines():
                         if line.startswith("data: "):
@@ -376,9 +372,8 @@ class LLMClient:
                             except Exception:
                                 continue
         except Exception as e:
-            logger.error(f"Anthropic stream error: {e}. Falling back to heuristic mock.")
-            async for token in self._stream_heuristic_mock(messages, system_prompt):
-                yield token
+            logger.error("Anthropic conversation request failed (%s).", type(e).__name__)
+            raise RuntimeError("The conversation service is unavailable. Please try again later.") from None
 
     async def _stream_heuristic_mock(
         self,
@@ -441,7 +436,7 @@ class LLMClient:
         self,
         transcript_history: List[Dict[str, Any]],
         context: Dict[str, Any],
-        model: str = "openai/gpt-4o",
+        model: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Generate a deep post-debate evaluation using GPT-4o.
 
@@ -560,7 +555,7 @@ class LLMClient:
         if self._openai_client:
             try:
                 response = await self._openai_client.chat.completions.create(
-                    model=model,
+                    model=model or self.model or config.openai_model,
                     messages=[
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_prompt},
@@ -585,7 +580,7 @@ class LLMClient:
                 from google.genai import types
                 prompt_content = f"{system_prompt}\n\n{user_prompt}\n\nReturn JSON:"
                 response = await self._gemini_client.aio.models.generate_content(
-                    model="gemini-2.0-flash",
+                    model=self.model or config.gemini_model,
                     contents=prompt_content,
                     config=types.GenerateContentConfig(
                         temperature=0.3,

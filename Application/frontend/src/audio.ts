@@ -226,6 +226,7 @@ export class MicrophoneStreamer {
     });
 
     this.audioContext = new AudioContext({ sampleRate: 16000 });
+    await this.audioContext.resume();
     this.source = this.audioContext.createMediaStreamSource(this.mediaStream);
     // 1024 samples are 64 ms at 16 kHz, keeping each browser audio frame short.
     this.processor = this.audioContext.createScriptProcessor(CAPTURE_BUFFER_SIZE, 1, 1);

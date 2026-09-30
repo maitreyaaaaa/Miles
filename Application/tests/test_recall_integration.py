@@ -38,6 +38,7 @@ def save_owned_bot(bot_id: str):
 
 def install_live_config(monkeypatch):
     live_config = SimpleNamespace(
+        google_meet_enabled=True,
         recall_ai_api_key="test-recall-key",
         recall_ai_region="ap-northeast-1",
         recall_ai_webhook_secret="test-webhook-secret",

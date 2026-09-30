@@ -130,7 +130,7 @@ app.state.auth_test_bypass = False
 
 
 def _is_public_http_route(method: str, path: str) -> bool:
-    if method == "OPTIONS" or path in {"/", "/health", "/api/health"}:
+    if method == "OPTIONS" or path in {"/", "/health", "/api/health", "/api/capabilities"}:
         return True
     if path == "/api/webhook/recall":
         return True  # This route verifies Recall's webhook signature itself.
@@ -307,7 +307,13 @@ class GoogleCalendarLinkRequest(BaseModel):
     access_token: Optional[str] = None
 
 
+def _require_meet_enabled() -> None:
+    if not config.google_meet_enabled:
+        raise HTTPException(status_code=404, detail="Meeting practice is unavailable.")
+
+
 def _require_live_meeting_configuration() -> None:
+    _require_meet_enabled()
     missing = []
     if not config.recall_ai_api_key:
         missing.append("RECALL_AI_API_KEY")
@@ -489,6 +495,11 @@ async def health_check():
     }
 
 
+@app.get("/api/capabilities")
+async def get_capabilities():
+    return {"google_meet_enabled": config.google_meet_enabled}
+
+
 async def probe_assemblyai() -> str:
     """Probe AssemblyAI streaming token generation."""
     if not config.assemblyai_api_key:
@@ -503,16 +514,38 @@ async def probe_assemblyai() -> str:
 
 
 async def probe_rime() -> str:
-    """Probe Rime Coda connection pool readiness."""
+    """Verify an actual authorized speech response, never a local fallback."""
     if not config.rime_api_key:
         return "system_fallback"
     client = RimeStreamingTTSClient(api_key=config.rime_api_key)
     try:
-        http_client = await client.get_http_client()
-        return "connected" if http_client and not http_client.is_closed else "degraded"
-    except Exception as e:
-        logger.warning(f"[Preflight] Rime probe failed: {e}")
-        return "system_fallback"
+        async def first_audio():
+            async with contextlib.aclosing(client.stream_audio_chunks("Ready.")) as stream:
+                async for chunk in stream:
+                    if chunk and any(chunk):
+                        return "connected"
+            return "offline"
+        return await asyncio.wait_for(first_audio(), timeout=12)
+    except Exception:
+        logger.warning("[Preflight] Rime speech probe failed.")
+        return "offline"
+    finally:
+        await client.close()
+
+
+async def probe_llm() -> str:
+    client = LLMClient()
+    try:
+        if client.provider == "mock":
+            return "unconfigured"
+        response = await asyncio.wait_for(client.generate_turn(
+            [{"role": "user", "content": "Say ready."}],
+            "Reply with one word.", max_tokens=8,
+        ), timeout=12)
+        return "connected" if response else "offline"
+    except Exception:
+        logger.warning("[Preflight] Conversation service probe failed.")
+        return "offline"
     finally:
         await client.close()
 
@@ -520,8 +553,9 @@ async def probe_rime() -> str:
 @app.get("/api/preflight")
 async def get_preflight_status():
     """Hardware & cloud provider preflight verification for audio sparring."""
-    stt_status = await probe_assemblyai()
-    rime_status = await probe_rime()
+    stt_status, rime_status, llm_status = await asyncio.gather(
+        probe_assemblyai(), probe_rime(), probe_llm(),
+    )
     active_llm = (
         config.openai_model
         if config.openai_api_key
@@ -535,6 +569,8 @@ async def get_preflight_status():
         "rime_model": config.rime_model_id,
         "rime_speaker": config.rime_speaker,
         "active_llm": active_llm,
+        "llm_status": llm_status,
+        "voice_ready": all(value == "connected" for value in (stt_status, rime_status, llm_status)),
     }
 
 
@@ -576,6 +612,7 @@ async def synthesize_speech_endpoint(req: SynthesizeTTSRequest):
         speaker=speaker,
         model_id=config.rime_model_id,
         sample_rate=config.tts_sample_rate,
+        allow_fallback=app.state.auth_test_bypass,
     )
     chunks: List[bytes] = []
     try:
@@ -811,7 +848,7 @@ async def get_google_auth_config():
         "api_key": config.google_api_key,
         "redirect_uri": config.google_redirect_uri,
         "drive_enabled": config.google_drive_enabled,
-        "calendar_enabled": config.google_calendar_enabled,
+        "calendar_enabled": config.google_meet_enabled and config.google_calendar_enabled,
         "oauth_enabled": bool(config.google_client_id and config.google_client_secret),
     }
 
@@ -819,6 +856,8 @@ async def get_google_auth_config():
 @app.get("/api/auth/google/url")
 async def get_google_authorization_url(purpose: str = Query(...), state: str = Query(..., min_length=16, max_length=256)):
     """Generate a scoped Google OAuth consent URL for a signed-in integration."""
+    if purpose == "calendar":
+        _require_meet_enabled()
     if not config.google_client_id or not config.google_client_secret:
         raise HTTPException(
             status_code=400,
@@ -943,6 +982,7 @@ async def get_session_report(session_id: str, request: Request):
 @app.post("/api/meeting/schedule")
 async def schedule_google_meet(req: ScheduleMeetingRequest, request: Request):
     """Schedule a Google Meet sparring session for Miles, with optional Google Calendar provisioning & Recall bot scheduling."""
+    _require_meet_enabled()
     scheduler = get_meeting_scheduler()
     meet_url = req.meet_url
 
@@ -1006,6 +1046,7 @@ async def schedule_google_meet(req: ScheduleMeetingRequest, request: Request):
 @app.post("/api/meeting/{meeting_id}/start")
 async def start_google_meet_session(meeting_id: str, request: Request):
     """Start Miles through Recall Output Media, or the local development simulator."""
+    _require_meet_enabled()
     scheduler = get_meeting_scheduler()
     session = await asyncio.to_thread(scheduler.get_session, request.state.user_id, meeting_id)
     if not session:
@@ -1088,6 +1129,7 @@ async def stop_google_meet_session(meeting_id: str, request: Request):
 @app.post("/api/meeting/generate-link")
 async def generate_instant_link(req: GoogleCalendarLinkRequest):
     """Generate a real Google Meet room (via Google Calendar) or fall back cleanly to a local simulation link."""
+    _require_meet_enabled()
     scheduler = get_meeting_scheduler()
     provisioner = GoogleMeetProvisioner(access_token=req.access_token)
     res = await provisioner.create_meeting_room()
@@ -1108,6 +1150,7 @@ async def generate_instant_link(req: GoogleCalendarLinkRequest):
 @app.post("/api/meeting/bot/launch")
 async def launch_meeting_bot(req: LaunchRecallBotRequest, request: Request):
     """Launch an ad-hoc or scheduled Recall.ai bot into a supported meeting platform."""
+    _require_meet_enabled()
     meeting_url = _validate_meeting_url(req.meeting_url)
 
     recall_svc = RecallService()
@@ -1356,7 +1399,7 @@ async def get_google_meet_debrief_html(meeting_id: str, request: Request):
 async def websocket_debate(
     websocket: WebSocket,
     scenario: str = Query("vc_pitch"),
-    topic: Optional[str] = Query(None),
+    topic: Optional[str] = Query(None, max_length=2000),
     difficulty: str = Query("hard"),
     persona_tone: Optional[str] = Query(None),
     audio_format: str = Query("binary"),
@@ -1365,6 +1408,9 @@ async def websocket_debate(
     meeting_bridge: bool = Query(False),
 ):
     """Full-Duplex live audio & telemetry stream for Miles."""
+    if meeting_bridge and not config.google_meet_enabled:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Meeting practice is unavailable.")
+        return
     origin = websocket.headers.get("origin")
     if origin and not is_allowed_origin(origin):
         logger.warning(f"[WebSocket] Rejected connection from unauthorized origin: {origin}")
@@ -1419,14 +1465,33 @@ async def websocket_debate(
             return
         user_id = verified_user.user_id
 
+    if scenario not in {item["id"] for item in list_scenarios()} or difficulty not in {"easy", "medium", "hard", "ruthless"}:
+        await websocket.send_json({"type": "session_error", "message": "Choose a valid scenario and difficulty.", "recoverable": False})
+        await websocket.close(code=1008)
+        return
+    if not app.state.auth_test_bypass and not all((
+        config.assemblyai_api_key, config.rime_api_key,
+        config.openai_api_key or config.gemini_api_key or config.anthropic_api_key,
+    )):
+        await websocket.send_json({"type": "session_error", "message": "Voice practice is temporarily unavailable. Please try again later.", "recoverable": False})
+        await websocket.close(code=1011)
+        return
+
     if bridge_session and bridge_session.meeting_id in SESSIONS:
         await websocket.close(code=1008, reason="This meeting already has an active audio bridge.")
         return
-    user_session_count = sum(owner_id == user_id for owner_id in SESSION_OWNERS.values())
+    # Reports that could not be saved remain temporarily available for PDF recovery.
+    # They must not occupy an active-session slot or grow without a bound.
+    cached_ids = [sid for sid, item in SESSIONS.items() if getattr(item, "_socket_closed", False)]
+    for sid in cached_ids[:-50]:
+        SESSIONS.pop(sid, None)
+        SESSION_OWNERS.pop(sid, None)
+    active_ids = {sid for sid, item in SESSIONS.items() if not getattr(item, "_socket_closed", False)}
+    user_session_count = sum(SESSION_OWNERS.get(sid) == user_id for sid in active_ids)
     if user_session_count >= MAX_ACTIVE_SESSIONS_PER_USER:
         await websocket.close(code=1008, reason="This account already has an active debate session.")
         return
-    if len(SESSIONS) >= MAX_ACTIVE_DEBATE_SESSIONS:
+    if len(active_ids) >= MAX_ACTIVE_DEBATE_SESSIONS:
         await websocket.close(code=1013, reason="The service is at its concurrent session limit. Try again shortly.")
         return
 
@@ -1463,6 +1528,11 @@ async def websocket_debate(
         context_dossier=context_dossier,
         is_panel_mode=is_panel_mode,
     )
+    if engine.llm_client.provider == "mock" and not app.state.auth_test_bypass:
+        await engine.llm_client.close()
+        await websocket.send_json({"type": "session_error", "message": "The conversation service is unavailable. Please try again later.", "recoverable": False})
+        await websocket.close(code=1011)
+        return
     SESSIONS[engine.session_id] = engine
     SESSION_OWNERS[engine.session_id] = user_id
     report_persisted = False
@@ -1473,6 +1543,7 @@ async def websocket_debate(
         speaker=engine.persona.speaker,
         model_id=config.rime_model_id,
         sample_rate=config.tts_sample_rate,
+        allow_fallback=app.state.auth_test_bypass,
     )
     interruption_mgr = InterruptionManager(tts_client=tts_client)
 
@@ -1487,13 +1558,14 @@ async def websocket_debate(
     user_speech_start_time = 0.0
     last_partial_time = time.time()
     current_turn_was_barge_in = False
-    last_barge_in_latency_ms = 0.018
+    last_barge_in_latency_ms: Optional[float] = None
     last_ai_interruption_time = 0.0
 
     # Audio Intelligence & Conversational Dominance Tracking
     user_talk_time_sec = 0.0
     ai_talk_time_sec = 0.0
     recent_micro_hesitations: List[Dict[str, Any]] = []
+    speech_confidences: List[float] = []
     turn_round = 0
 
     active_ai_turn_task: Optional[asyncio.Task] = None
@@ -1501,6 +1573,8 @@ async def websocket_debate(
     audio_stream_lock = asyncio.Lock()
     stt_client: Optional[AssemblyAIStreamingClient] = None
     stt_connected = False
+    ending = False
+    session_failed = False
     stop_event = asyncio.Event()
     ws_channel = WebSocketChannel(websocket, stop_event)
 
@@ -1509,6 +1583,18 @@ async def websocket_debate(
 
     async def safe_send_bytes(data: bytes):
         await ws_channel.send_bytes(data)
+
+    async def fail_voice_session(message: str):
+        nonlocal session_failed, stt_connected
+        if session_failed or ending or stop_event.is_set():
+            return
+        session_failed = True
+        stt_connected = False
+        tts_client.cancel()
+        for task in (active_ai_turn_task, monitor_task):
+            if task and task is not asyncio.current_task() and not task.done():
+                task.cancel()
+        await safe_send_json({"type": "session_error", "message": message, "recoverable": True})
 
     async def fail_bridge_startup(message: str):
         """Fail closed before opening the meeting audio stream if a dependency is unavailable."""
@@ -1561,7 +1647,7 @@ async def websocket_debate(
             "user_pct": user_pct,
             "ai_pct": ai_pct,
             "micro_hesitations": recent_micro_hesitations[-5:],
-            "confidence_mean": 0.96,
+            "confidence_mean": round(sum(speech_confidences) / len(speech_confidences), 3) if speech_confidences else None,
             "stress_indicator": "elevated" if len(recent_micro_hesitations) >= 2 else "steady",
         }
         await safe_send_json(payload)
@@ -1576,10 +1662,10 @@ async def websocket_debate(
         await safe_send_json({
             "type": "turn_telemetry",
             "ttfa_ms": ttfa_ms,
-            "barge_in_latency_ms": round(last_barge_in_latency_ms, 3),
-            "stt_provider": "AssemblyAI v3 (universal-3-5-pro)",
-            "tts_provider": f"Rime Coda ({engine.persona.speaker})",
-            "llm_provider": active_llm,
+            "barge_in_latency_ms": round(last_barge_in_latency_ms, 3) if last_barge_in_latency_ms is not None else None,
+            "stt_provider": "AssemblyAI" if stt_connected else "Unavailable",
+            "tts_provider": getattr(tts_client, "active_provider", "Test provider"),
+            "llm_provider": engine.llm_client.provider,
         })
 
     async def stream_ai_audio(
@@ -1608,6 +1694,8 @@ async def websocket_debate(
                             await safe_send_json({"type": "audio_chunk", "data": b64})
                     else:
                         break
+            except Exception:
+                await fail_voice_session("Miles could not play its voice. Finish this round for feedback, then try again.")
             finally:
                 nonlocal ai_talk_time_sec
                 ai_duration = max(0.4, time.time() - ai_stream_start)
@@ -1716,8 +1804,9 @@ async def websocket_debate(
 
     def on_stt_final(transcript: str, confidence: float):
         """Finalized user statement."""
+        speech_confidences.append(confidence)
         nonlocal last_ai_interruption_time
-        if interruption_mgr.ai_interruption_active or (time.time() - last_ai_interruption_time < 0.8):
+        if not ending and (interruption_mgr.ai_interruption_active or (time.time() - last_ai_interruption_time < 0.8)):
             logger.info("[on_stt_final] Suppressing trailing user speech finalize received during/after AI interruption.")
             return
         nonlocal turn_start_time, user_speech_start_time, current_turn_was_barge_in, active_ai_turn_task
@@ -1788,7 +1877,8 @@ async def websocket_debate(
         # Cancel any previous AI task and trigger new counter-attack
         if active_ai_turn_task and not active_ai_turn_task.done():
             active_ai_turn_task.cancel()
-        active_ai_turn_task = ws_channel.dispatch(execute_ai_turn(trigger_time=now))
+        if not ending and not session_failed:
+            active_ai_turn_task = ws_channel.dispatch(execute_ai_turn(trigger_time=now))
 
     def on_stt_words(words: List[Dict[str, Any]], hesitations: List[Dict[str, Any]]):
         """Process word-level timestamps and micro-hesitation events."""
@@ -1867,6 +1957,8 @@ async def websocket_debate(
         except asyncio.CancelledError:
             interruption_mgr.mark_ai_thinking_done()
             return
+        except Exception:
+            await fail_voice_session("The conversation service stopped responding. Finish this round for feedback, then try again.")
         finally:
             interruption_mgr.mark_ai_thinking_done()
             if interruption_mgr.ai_is_speaking:
@@ -1956,98 +2048,103 @@ async def websocket_debate(
                         ai_speech_end_time = time.time()
                         continue
 
-    # 2. Connect AssemblyAI in background with scenario vocabulary boosting
-    scenario_boost = SCENARIO_VOCABULARY.get(scenario, SCENARIO_VOCABULARY.get("vc_pitch", []))
-    stt_client = AssemblyAIStreamingClient(
-        api_key=config.assemblyai_api_key,
-        sample_rate=config.sample_rate,
-        word_boost=scenario_boost,
-        on_partial=on_stt_partial,
-        on_final=on_stt_final,
-        on_speech_start=on_stt_speech_start,
-        on_words=on_stt_words,
-    )
-
-    async def connect_stt_background():
-        nonlocal stt_connected
-        stt_connected = await stt_client.connect()
-
-    if bridge_session:
-        try:
-            stt_connected = await asyncio.wait_for(stt_client.connect(), timeout=20)
-        except asyncio.CancelledError:
-            await fail_bridge_startup("Meeting audio startup was interrupted, so Miles left the meeting.")
-            raise
-        except Exception:
-            logger.exception("Could not connect AssemblyAI before starting meeting %s.", bridge_session.meeting_id)
-        if not stt_connected:
-            await fail_bridge_startup("Miles could not connect to speech recognition and left the meeting.")
-            return
-
-        await safe_send_json({"type": "meeting_bridge_ready"})
-        try:
-            audio_ready = json.loads(await asyncio.wait_for(websocket.receive_text(), timeout=20))
-        except asyncio.CancelledError:
-            await fail_bridge_startup("Meeting audio startup was interrupted, so Miles left the meeting.")
-            raise
-        except (asyncio.TimeoutError, WebSocketDisconnect, json.JSONDecodeError):
-            await fail_bridge_startup("Meeting audio could not start, so Miles left the meeting.")
-            return
-        if not isinstance(audio_ready, dict) or audio_ready.get("type") != "meeting_bridge_audio_ready":
-            await fail_bridge_startup("Meeting audio could not start, so Miles left the meeting.")
-            return
-        await safe_send_json({"type": "meeting_bridge_started"})
-    else:
-        ws_channel.dispatch(connect_stt_background())
-
-    # 3. Deliver opening salvo immediately
-    opening_start = time.time()
-    if context_dossier:
-        await safe_send_json({
-            "type": "context_loaded",
-            "context_id": context_dossier.get("context_id"),
-            "title": context_dossier.get("title"),
-            "doc_type": context_dossier.get("doc_type"),
-            "metric_count": len(context_dossier.get("numeric_metrics", [])),
-            "metrics": context_dossier.get("numeric_metrics", []),
-        })
-
-    if engine.is_panel_mode and engine.panel:
-        await safe_send_json({
-            "type": "panel_init",
-            "panel": engine.panel.to_dict(),
-        })
-
-    opening = engine.start_debate()
-    await safe_send_json({
-        "type": "transcript",
-        "role": "ai",
-        "speaker": engine.current_speaker_name,
-        "speaker_voice": engine.current_speaker_voice,
-        "is_panel_mode": engine.is_panel_mode,
-        "text": opening,
-        "is_final": True,
-        "confidence": 1.0,
-    })
-
-    # Broadcast initial tactical attack profile for Training HUD
-    init_tactic = engine.tactic_detector.detect_tactic(opening)
-    await safe_send_json({
-        "type": "rhetorical_tactic",
-        "tactic": init_tactic.to_dict(),
-    })
-
-    init_snapshot = engine.scorer.evaluate_turn("", duration_seconds=1.0)
-    await safe_send_json(init_snapshot.to_dict())
-    ws_channel.dispatch(emit_speech_intelligence())
-    ws_channel.dispatch(emit_turn_telemetry(opening_start))
-
-    # Stream opening audio and launch active presence monitor
-    active_ai_turn_task = ws_channel.dispatch(stream_ai_audio(opening))
-    monitor_task = ws_channel.dispatch(monitor_user_presence_loop())
-
-    # 4. Main WebSocket Message Pump
     try:
+        # 2. Connect AssemblyAI in background with scenario vocabulary boosting
+        scenario_boost = SCENARIO_VOCABULARY.get(scenario, SCENARIO_VOCABULARY.get("vc_pitch", []))
+        stt_client = AssemblyAIStreamingClient(
+            api_key=config.assemblyai_api_key,
+            sample_rate=config.sample_rate,
+            word_boost=scenario_boost,
+            on_partial=on_stt_partial,
+            on_final=on_stt_final,
+            on_speech_start=on_stt_speech_start,
+            on_words=on_stt_words,
+            on_disconnected=lambda: ws_channel.dispatch(fail_voice_session("Speech recognition disconnected. Finish this round for feedback, then try again.")),
+        )
+
+        if bridge_session:
+            try:
+                stt_connected = await asyncio.wait_for(stt_client.connect(), timeout=20)
+            except asyncio.CancelledError:
+                await fail_bridge_startup("Meeting audio startup was interrupted, so Miles left the meeting.")
+                raise
+            except Exception:
+                logger.exception("Could not connect AssemblyAI before starting meeting %s.", bridge_session.meeting_id)
+            if not stt_connected:
+                await fail_bridge_startup("Miles could not connect to speech recognition and left the meeting.")
+                return
+
+            await safe_send_json({"type": "meeting_bridge_ready"})
+            try:
+                audio_ready = json.loads(await asyncio.wait_for(websocket.receive_text(), timeout=20))
+            except asyncio.CancelledError:
+                await fail_bridge_startup("Meeting audio startup was interrupted, so Miles left the meeting.")
+                raise
+            except (asyncio.TimeoutError, WebSocketDisconnect, json.JSONDecodeError):
+                await fail_bridge_startup("Meeting audio could not start, so Miles left the meeting.")
+                return
+            if not isinstance(audio_ready, dict) or audio_ready.get("type") != "meeting_bridge_audio_ready":
+                await fail_bridge_startup("Meeting audio could not start, so Miles left the meeting.")
+                return
+            await safe_send_json({"type": "meeting_bridge_started"})
+        else:
+            if not app.state.auth_test_bypass:
+                stt_connected, voice_output, conversation = await asyncio.gather(
+                    asyncio.wait_for(stt_client.connect(), timeout=20), probe_rime(), probe_llm(),
+                )
+                if not stt_connected or voice_output != "connected" or conversation != "connected":
+                    await safe_send_json({"type": "session_error", "message": "Voice practice could not start. Please check audio setup and try again.", "recoverable": False})
+                    await websocket.close(code=1011)
+                    return
+            await safe_send_json({"type": "session_ready", "session_id": engine.session_id})
+
+        # 3. Deliver opening salvo immediately
+        opening_start = time.time()
+        if context_dossier:
+            await safe_send_json({
+                "type": "context_loaded",
+                "context_id": context_dossier.get("context_id"),
+                "title": context_dossier.get("title"),
+                "doc_type": context_dossier.get("doc_type"),
+                "metric_count": len(context_dossier.get("numeric_metrics", [])),
+                "metrics": context_dossier.get("numeric_metrics", []),
+            })
+
+        if engine.is_panel_mode and engine.panel:
+            await safe_send_json({
+                "type": "panel_init",
+                "panel": engine.panel.to_dict(),
+            })
+
+        opening = engine.start_debate()
+        await safe_send_json({
+            "type": "transcript",
+            "role": "ai",
+            "speaker": engine.current_speaker_name,
+            "speaker_voice": engine.current_speaker_voice,
+            "is_panel_mode": engine.is_panel_mode,
+            "text": opening,
+            "is_final": True,
+            "confidence": 1.0,
+        })
+
+        # Broadcast initial tactical attack profile for Training HUD
+        init_tactic = engine.tactic_detector.detect_tactic(opening)
+        await safe_send_json({
+            "type": "rhetorical_tactic",
+            "tactic": init_tactic.to_dict(),
+        })
+
+        init_snapshot = engine.scorer.evaluate_turn("", duration_seconds=1.0)
+        await safe_send_json(init_snapshot.to_dict())
+        ws_channel.dispatch(emit_speech_intelligence())
+        ws_channel.dispatch(emit_turn_telemetry(opening_start))
+
+        # Stream opening audio and launch active presence monitor
+        active_ai_turn_task = ws_channel.dispatch(stream_ai_audio(opening))
+        monitor_task = ws_channel.dispatch(monitor_user_presence_loop())
+
+        # 4. Main WebSocket Message Pump
         while not stop_event.is_set():
             message = await websocket.receive()
 
@@ -2079,6 +2176,9 @@ async def websocket_debate(
                     cmd_type = payload.get("type")
 
                     if cmd_type == "end_debate":
+                        if ending:
+                            continue
+                        ending = True
                         # Silence any ongoing AI speech and cancel monitoring loop
                         if monitor_task and not monitor_task.done():
                             monitor_task.cancel()
@@ -2086,6 +2186,14 @@ async def websocket_debate(
                         tts_client.cancel()
                         if active_ai_turn_task and not active_ai_turn_task.done():
                             active_ai_turn_task.cancel()
+                            with contextlib.suppress(asyncio.CancelledError):
+                                await active_ai_turn_task
+
+                        await safe_send_json({"type": "debrief_status", "status": "generating", "message": "Finishing your final answer…"})
+                        transcript_complete = True
+                        if stt_connected and stt_client:
+                            transcript_complete = await stt_client.flush_final_turn()
+                        await stt_client.stop()
 
                         if bridge_session and bridge_session.recall_bot_id and bridge_session.status not in {
                             MeetingStatus.COMPLETED, MeetingStatus.FAILED, MeetingStatus.CANCELLED
@@ -2097,15 +2205,23 @@ async def websocket_debate(
                                 logger.exception("Could not ask Recall.ai to leave meeting %s.", bridge_session.meeting_id)
                                 meeting_leave_error = "Recall.ai could not confirm that Miles left the meeting."
 
-                        # Inform UI that GPT-4o is deeply analyzing the debate transcript
+                        # Give the evaluator a bounded time to produce feedback.
                         await safe_send_json({
                             "type": "debrief_status",
                             "status": "generating",
-                            "message": "Analyzing debate transcript with GPT-4o...",
+                            "message": "Reviewing your answers and preparing feedback…",
                         })
 
-                        # Deep evaluation via GPT-4o
-                        report = await engine.generate_llm_debrief_report()
+                        try:
+                            report = await asyncio.wait_for(engine.generate_llm_debrief_report(), timeout=45)
+                        except asyncio.TimeoutError:
+                            report = engine.get_debrief_report()
+                            engine._cached_report = report
+                            report["assessment_note"] = "The AI evaluator timed out. This report contains observed speech signals and rule-based feedback; argument quality was not scored."
+                        report["transcript_complete"] = transcript_complete
+                        if not transcript_complete:
+                            report["assessment_note"] += " Transcription could not be confirmed at finish; this report covers confirmed turns only."
+                        report["persistence_status"] = "saved"
                         try:
                             await asyncio.to_thread(get_debrief_store().save_report, report, user_id)
                             report_persisted = True
@@ -2125,6 +2241,7 @@ async def websocket_debate(
                                     get_meeting_scheduler().store.save_session, bridge_session
                                 )
                         except Exception:
+                            report["persistence_status"] = "temporary"
                             logger.exception("Could not persist completed debate report %s.", engine.session_id)
                             await safe_send_json({
                                 "type": "debrief_status",
@@ -2132,7 +2249,9 @@ async def websocket_debate(
                                 "message": "The report is ready, but it could not be saved for later access.",
                             })
                         await safe_send_json(report)
-                        logger.info(f"[DebateEngine] Debate concluded. GPT-4o report sent for session {engine.session_id}.")
+                        logger.info("Debate report sent for session %s.", engine.session_id)
+                        await websocket.close(code=1000)
+                        break
 
                     elif cmd_type == "user_text":
                         # Text fallback input for testing without microphone
@@ -2154,8 +2273,14 @@ async def websocket_debate(
             logger.info(f"[WebSocket] Connection closed: session {engine.session_id}")
         else:
             logger.error(f"[WebSocket] RuntimeError: {e}", exc_info=True)
+            await safe_send_json({"type": "session_error", "message": "The session could not continue. Please return to setup and try again.", "recoverable": False})
+            with contextlib.suppress(Exception):
+                await websocket.close(code=1011)
     except Exception as e:
         logger.error(f"[WebSocket] Error: {e}", exc_info=True)
+        await safe_send_json({"type": "session_error", "message": "The session could not continue. Please return to setup and try again.", "recoverable": False})
+        with contextlib.suppress(Exception):
+            await websocket.close(code=1011)
     finally:
         stop_event.set()
         if monitor_task and not monitor_task.done():
@@ -2205,7 +2330,12 @@ async def websocket_debate(
             except Exception:
                 logger.exception("Could not finalize meeting debrief for %s.", bridge_session.meeting_id)
         await engine.llm_client.close()
+        engine._socket_closed = True
         if bridge_session or report_persisted or not getattr(engine, "_cached_report", None):
             if SESSIONS.get(engine.session_id) is engine:
                 SESSIONS.pop(engine.session_id, None)
                 SESSION_OWNERS.pop(engine.session_id, None)
+        cached_ids = [sid for sid, item in SESSIONS.items() if getattr(item, "_socket_closed", False)]
+        for sid in cached_ids[:-50]:
+            SESSIONS.pop(sid, None)
+            SESSION_OWNERS.pop(sid, None)

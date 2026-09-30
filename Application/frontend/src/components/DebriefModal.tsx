@@ -372,10 +372,10 @@ export const DebriefModal: React.FC<DebriefModalProps> = ({
             className={`debrief-action-btn ${shareCopied ? "copied" : ""}`}
             onClick={handleShareDebrief}
             disabled={sharing}
-            title="Generate shareable read-only link for pitch coaches or mentors"
+            title="Create a read-only link. Anyone with this link can read your report."
           >
             <Share2 size={14} />
-            <span>{sharing ? "Sharing..." : shareCopied ? "Link Copied!" : "Share Debrief"}</span>
+            <span>{sharing ? "Creating link…" : shareCopied ? "Link copied" : "Create share link"}</span>
           </button>
           <button
             type="button"
@@ -416,6 +416,11 @@ export const DebriefModal: React.FC<DebriefModalProps> = ({
       <main className="debrief-fullscreen-content">
         <div className="debrief-content-container">
           {actionError && <p className="debrief-action-error" role="alert">{actionError}</p>}
+          {report.persistence_status === "temporary" && (
+            <p className="debrief-action-error" role="alert">
+              Your report could not be saved. Download the PDF now; access to this report is temporary.
+            </p>
+          )}
           {report.assessment_note && (
             <p className={`debrief-assessment-note ${report.assessment_status || ""}`} role="status">
               {report.assessment_note}

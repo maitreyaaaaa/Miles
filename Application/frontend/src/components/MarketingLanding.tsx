@@ -1,24 +1,8 @@
-import React, { useState, useEffect } from "react";
-import {
-  ArrowRight,
-  Play,
-  Pause,
-  Zap,
-  Sparkles,
-  CheckCircle2,
-  Activity,
-  FileText,
-  Users,
-  Video,
-  Gauge,
-  Target,
-  Radio,
-} from "lucide-react";
+import { useEffect, useState } from "react";
+import { Activity, ArrowRight, CheckCircle2, FileText, Gauge, Mic, ShieldCheck, Target, Video, Zap } from "lucide-react";
 import type { ScenarioId } from "../types";
-import { ShinyText } from "./ShinyText";
-import { SpotlightCard } from "./SpotlightCard";
-import { BlurText } from "./BlurText";
-import { CountUp } from "./CountUp";
+import { GOOGLE_MEET_ENABLED } from "../features";
+import { scenarios } from "../scenarios";
 
 interface MarketingLandingProps {
   onStartDebate: (scenarioId?: ScenarioId, customTopic?: string) => void;
@@ -27,752 +11,203 @@ interface MarketingLandingProps {
   onOpenMeetModal: () => void;
 }
 
-const rotatingRoles = [
-  "VC pitch",
-  "salary talk",
-  "hard question",
-  "board meeting",
-  "press mess",
-];
+const examples: Record<ScenarioId, { question: string; answer: string; feedback: string }> = {
+  vc_pitch: { question: "What stops a bigger company from copying this?", answer: "Our advantage is the workflow and distribution we have built with customers.", feedback: "Lead with the advantage, then support it with evidence." },
+  salary_negotiation: { question: "What results support the salary you are asking for?", answer: "I led the launch, improved retention, and can show the impact against our targets.", feedback: "Connect your request to specific outcomes." },
+  hostile_cross_exam: { question: "What did you personally observe, and what are you assuming?", answer: "I can speak to what I saw. I cannot confirm what happened before I arrived.", feedback: "Separate facts from assumptions and keep the answer direct." },
+  senior_interview: { question: "Why did you choose this architecture over the simpler option?", answer: "The simpler option works today. This design addresses our consistency requirements as traffic grows.", feedback: "State the requirement and explain the tradeoff." },
+  sales_objections: { question: "Why should we switch when our current tool already works?", answer: "The difference is the time your team spends on exceptions. Let us measure that in a pilot.", feedback: "Answer the objection with a measurable customer outcome." },
+  media_crisis: { question: "What do you know now, and what are you doing about it?", answer: "We have confirmed the incident, contained access, and will share verified updates as the investigation progresses.", feedback: "Be precise about confirmed facts and next actions." },
+  hostile_boardroom: { question: "Why should we back this plan if margins are falling?", answer: "The plan addresses the two largest cost drivers. I can walk through the assumptions and milestones.", feedback: "Own the issue and show how you will measure progress." },
+  custom_debate: { question: "What evidence would make you change your position?", answer: "A result that contradicts my core assumption would change it. Here is how I would test that.", feedback: "Name the assumption and make the claim testable." },
+};
 
-export const MarketingLanding: React.FC<MarketingLandingProps> = ({
-  onStartDebate,
-  onOpenPreflight,
-  onOpenContextModal,
-  onOpenMeetModal,
-}) => {
-  const [roleIndex, setRoleIndex] = useState(0);
+export function MarketingLanding({ onStartDebate, onOpenPreflight, onOpenContextModal, onOpenMeetModal }: MarketingLandingProps) {
   const [customTopic, setCustomTopic] = useState("");
-  const [selectedHeroScenario, setSelectedHeroScenario] = useState<ScenarioId>("vc_pitch");
-  const [playingSample, setPlayingSample] = useState<string | null>(null);
+  const [previewScenario, setPreviewScenario] = useState<ScenarioId>("vc_pitch");
+  const example = examples[previewScenario];
 
   useEffect(() => {
-    const interval = setInterval(() => {
-      setRoleIndex((prev) => (prev + 1) % rotatingRoles.length);
-    }, 2800);
-    return () => clearInterval(interval);
-  }, []);
-
-  useEffect(() => {
-    const motionQuery = window.matchMedia("(prefers-reduced-motion: reduce)");
-    const revealItems = Array.from(document.querySelectorAll<HTMLElement>(".reveal-on-scroll"));
-    if (motionQuery.matches || !("IntersectionObserver" in window)) {
-      revealItems.forEach((item) => item.classList.add("is-visible"));
+    const items = Array.from(document.querySelectorAll<HTMLElement>(".marketing-shell .reveal-on-scroll"));
+    const motion = window.matchMedia("(prefers-reduced-motion: reduce)");
+    if (motion.matches || !("IntersectionObserver" in window)) {
+      items.forEach((item) => item.classList.add("is-visible"));
       return;
     }
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        entries.forEach((entry) => {
-          if (entry.isIntersecting) {
-            entry.target.classList.add("is-visible");
-            observer.unobserve(entry.target);
-          }
-        });
-      },
-      { rootMargin: "0px 0px -12% 0px", threshold: 0.16 },
-    );
-
-    revealItems.forEach((item) => observer.observe(item));
+    const observer = new IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        const element = entry.target as HTMLElement;
+        element.dataset.inView = String(entry.isIntersecting);
+        if (entry.isIntersecting) element.classList.add("is-visible");
+      });
+    }, { rootMargin: "0px 0px -5% 0px", threshold: 0.08 });
+    items.forEach((item) => observer.observe(item));
     return () => observer.disconnect();
   }, []);
 
-  const handleCustomTopicSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (customTopic.trim()) {
-      onStartDebate("custom_debate", customTopic.trim());
-    } else {
-      onStartDebate("custom_debate");
-    }
-  };
-
-  const toggleSample = (id: string) => {
-    if (playingSample === id) {
-      setPlayingSample(null);
-    } else {
-      setPlayingSample(id);
-      // Auto-stop simulation after 4 seconds
-      setTimeout(() => {
-        setPlayingSample((current) => (current === id ? null : current));
-      }, 4200);
-    }
-  };
+  const chooseScenario = () => document.getElementById("practice-scenarios")?.scrollIntoView({
+    behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+  });
 
   return (
     <div className="marketing-shell">
-      {/* =========================================================================
-          HERO VIEWPORT (With Iconic Lime Artwork Background)
-          ========================================================================= */}
       <section className="hero-viewport">
-        <div className="hero-texture-layer" aria-hidden="true" />
-        <div className="hero-ambient-lines" aria-hidden="true">
-          <span />
-          <span />
-          <span />
-        </div>
-
-        {/* TOP CORNER EDITORIAL BADGES */}
         <div className="hero-top-corners">
-          <div className="hero-corner-item hero-corner-tl">
-            <ShinyText text="STOP WINGING IT" speed={5} />
-            <span>GET READY FIRST</span>
-          </div>
-          <div className="hero-corner-item hero-corner-tr">
-            <span>PRACTICE OUT LOUD</span>
-            <div className="hero-corner-dash" />
-            <span>BEFORE IT COUNTS</span>
-          </div>
+          <div className="hero-corner-item hero-corner-tl"><span>PRACTICE OUT LOUD</span><span>BEFORE IT MATTERS</span></div>
+          <div className="hero-corner-item hero-corner-tr"><span>YOUR AI SPARRING PARTNER</span></div>
         </div>
-
-        {/* SIDE TYPOGRAPHIC ANNOTATIONS */}
-        <aside className="hero-side-annotation hero-annotation-left" aria-hidden="true">
-          <div className="annotation-content">
-            <span>SPEAK</span>
-            <span>THINK</span>
-            <span>FOCUS</span>
-            <span>REPEAT.</span>
-          </div>
-        </aside>
-        <aside className="hero-side-annotation hero-annotation-right" aria-hidden="true">
-          <div className="annotation-content">
-            <span>IDEAS</span>
-            <span>PRESSURE</span>
-            <span>ANSWERS</span>
-            <span>NO PANIC</span>
-            <svg className="hero-curved-arrow-svg" viewBox="0 0 54 54" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M12 44C16 26 26 14 44 10M44 10L32 8M44 10L40 22" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-          </div>
-        </aside>
-
-        {/* BOTTOM RIGHT CORNER BADGE */}
-        <div className="hero-corner-item hero-corner-br" aria-hidden="true">
-          <span>REAL TALK</span>
-          <span>NO SAFE MODE</span>
-          <div className="hero-corner-dash" />
-        </div>
-
-        {/* HERO CONTENT CONTAINER */}
         <div className="hero-content-wrapper">
-          {/* LOGO */}
-          <div className="hero-logo-box">
-            <img
-              src="/miles_home_logo.png"
-              alt="Miles Logo"
-              className="hero-logo-img"
-            />
+          <div className="hero-logo-box"><img src="/miles_home_logo.png" alt="Miles" className="hero-logo-img" /></div>
+          <div className="hero-dynamic-pill"><Mic size={14} /><span>Real voice practice. Useful feedback.</span></div>
+          <h1 className="hero-headline">Practice difficult <span className="headline-cursive">conversations</span> before they matter.</h1>
+          <p className="hero-subtitle">Miles is your AI voice sparring partner for pitches, interviews, negotiations, and tough questions. Practice out loud, handle realistic pushback, and leave with a report showing what to improve.</p>
+          <div className="hero-actions">
+            <button type="button" className="hero-start-cta" onClick={chooseScenario}>Start practicing <ArrowRight size={17} /></button>
+            <a className="hero-preview-link" href="#sample-report">See a sample report</a>
           </div>
-
-          {/* DYNAMIC ROTATING HOOK BADGE */}
-          <div className="hero-dynamic-pill">
-            <span className="hero-pill-prefix">Don't freeze up in a</span>
-            <span className="hero-rotating-word" key={roleIndex}>
-              {rotatingRoles[roleIndex]}
-            </span>
-          </div>
-
-          {/* HEADLINE */}
-          <h1 className="hero-headline">
-            <BlurText text="Practice the" delay={45} />{" "}
-            <span className="headline-cursive">conversation</span>{" "}
-            <BlurText text="before it gets real." delay={45} />
-          </h1>
-
-          {/* SUBTITLE */}
-          <p className="hero-subtitle">
-            Miles talks with you out loud, pushes back, cuts in when you dodge,
-            and shows where you lost the plot. It is practice for hard rooms.
-          </p>
-
-          {/* PRIMARY CALL TO ACTION BUTTON */}
-          <div style={{ display: "flex", justifyContent: "center" }}>
-            <button
-                type="button"
-                className="hero-start-cta"
-                onClick={() => onStartDebate(selectedHeroScenario)}
-              >
-                Start a round
-              </button>
-          </div>
-
-          {/* CUSTOM TOPIC CAPSULE */}
+          <p className="hero-practice-note">Practice in your browser with a microphone and headphones.</p>
           <div className="hero-topic-maker">
-            <label htmlFor="hero-custom-topic-input" className="hero-topic-label">
-              Make your own topic. Keep it real.
-            </label>
-            <form className="hero-topic-capsule" onSubmit={handleCustomTopicSubmit}>
-              <input
-                id="hero-custom-topic-input"
-                type="text"
-                placeholder="e.g. Remote work makes teams worse"
-                value={customTopic}
-                onChange={(e) => setCustomTopic(e.target.value)}
-              />
-              <button
-                type="submit"
-                className="hero-topic-arrow-btn"
-                title="Practice this topic"
-              >
-                <ArrowRight size={16} />
-              </button>
+            <label htmlFor="hero-custom-topic-input" className="hero-topic-label">Have a specific conversation in mind?</label>
+            <form className="hero-topic-capsule" onSubmit={(event) => {
+              event.preventDefault();
+              if (customTopic.trim()) onStartDebate("custom_debate", customTopic.trim());
+            }}>
+              <input id="hero-custom-topic-input" type="text" value={customTopic} maxLength={2000}
+                onChange={(event) => setCustomTopic(event.target.value)} placeholder="e.g. Defend our pricing strategy" required />
+              <button type="submit" className="hero-topic-arrow-btn" aria-label="Practice your custom topic"><ArrowRight size={16} /></button>
             </form>
           </div>
-
-          {/* 3 FEATURED SCENARIO CARDS */}
-          <div className="hero-featured-grid">
-            <button
-              type="button"
-              className={`hero-scenario-card ${selectedHeroScenario === "vc_pitch" ? "selected" : ""}`}
-              onClick={() => {
-                setSelectedHeroScenario("vc_pitch");
-                onStartDebate("vc_pitch");
-              }}
-            >
-              <span className="hero-card-tag">STARTUPS</span>
-              <strong className="hero-card-title">Pitch without folding</strong>
-              <p className="hero-card-desc">
-                Explain your idea, your numbers, and why anyone should care.
-              </p>
-            </button>
-
-            <button
-              type="button"
-              className={`hero-scenario-card ${selectedHeroScenario === "salary_negotiation" ? "selected" : ""}`}
-              onClick={() => {
-                setSelectedHeroScenario("salary_negotiation");
-                onStartDebate("salary_negotiation");
-              }}
-            >
-              <span className="hero-card-tag">CAREER</span>
-              <strong className="hero-card-title">Ask for more money</strong>
-              <p className="hero-card-desc">
-                Say your number clearly and stop apologizing for wanting it.
-              </p>
-            </button>
-
-            <button
-              type="button"
-              className={`hero-scenario-card ${selectedHeroScenario === "hostile_cross_exam" ? "selected" : ""}`}
-              onClick={() => {
-                setSelectedHeroScenario("hostile_cross_exam");
-                onStartDebate("hostile_cross_exam");
-              }}
-            >
-              <span className="hero-card-tag">LEGAL</span>
-              <strong className="hero-card-title">Do not crumble</strong>
-              <p className="hero-card-desc">
-                Handle sharp questions without rambling yourself into a hole.
-              </p>
-            </button>
-          </div>
         </div>
-
-        {/* MULTI-STOP SMOOTH GRADIENT FADE */}
-        <div className="hero-gradient-fade" />
       </section>
 
-      <section className="product-proof-strip reveal-on-scroll" aria-label="Product evidence">
+      <section className="product-proof-strip reveal-on-scroll" aria-label="What you get">
         <div className="proof-strip-inner">
-          <div className="proof-copy">
-            <span className="proof-kicker">For the moment before the room goes quiet</span>
-            <strong>Practice out loud. Get interrupted. Learn what to fix.</strong>
-          </div>
+          <div className="proof-copy"><span className="proof-kicker">Prepare for the conversation ahead</span><strong>Speak. Get challenged. Know what to improve.</strong></div>
           <div className="proof-metrics">
-            <div>
-              <Activity size={16} />
-              <span>See your pace</span>
-            </div>
-            <div>
-              <Radio size={16} />
-              <span>Talk both ways</span>
-            </div>
-            <div>
-              <FileText size={16} />
-              <span>Use your deck</span>
-            </div>
+            <div><Mic size={16} /><span>Live voice practice</span></div>
+            <div><FileText size={16} /><span>Your documents as context</span></div>
+            <div><Activity size={16} /><span>A report after every round</span></div>
           </div>
         </div>
       </section>
 
-      {/* =========================================================================
-          SECTION / 01 — THE REALITY (The Problem & Contrast)
-          ========================================================================= */}
-      <section className="marketing-section section-dark reveal-on-scroll" id="the-reality">
+      <section className="marketing-section section-dark reveal-on-scroll" id="practice-scenarios">
         <div className="section-container">
-          <div className="section-index-badge">
-            <span className="badge-dot" />
-            <span>/ 01 — THE PROBLEM</span>
-          </div>
-
-          <h2 className="section-headline">
-            Most people practice the big conversation in their head and call it prep.
-          </h2>
-          <p className="section-lead">
-            Then the other person asks one tough question and suddenly your train of thought completely derails.
-            Miles lets you feel that pressure before it matters.
-          </p>
-
-          <div className="contrast-grid">
-            <div className="contrast-card contrast-standard reveal-on-scroll">
-              <div className="contrast-card-header">
-                <span className="contrast-pill standard-pill">Normal AI chat</span>
-                <span className="contrast-status">Too polite</span>
-              </div>
-              <ul className="contrast-list">
-                <li>
-                  <strong>It just flatters you:</strong> "Great point" this, "nice idea" that. But flattery is not real practice.
-                </li>
-                <li>
-                  <strong>It lets you ramble:</strong> You can talk in circles for two minutes and nothing stops you.
-                </li>
-                <li>
-                  <strong>No pressure:</strong> You feel comfortable, until the real meeting catches you off guard.
-                </li>
-                <li>
-                  <strong>It cannot hear you:</strong> It misses your pauses, filler words, and panic speed.
-                </li>
-              </ul>
-            </div>
-
-            <div className="contrast-card contrast-miles reveal-on-scroll">
-              <div className="contrast-card-header">
-                <span className="contrast-pill miles-pill">Miles</span>
-                <span className="contrast-status status-active">Dialed in</span>
-              </div>
-              <ul className="contrast-list">
-                <li>
-                  <strong>No sugarcoating:</strong> Miles pushes back when your answer is weak.
-                </li>
-                <li>
-                  <strong>It cuts in:</strong> If you dodge, stall, or waffle, Miles calls it out.
-                </li>
-                <li>
-                  <strong>It tracks the basics:</strong> Pace, filler words, and how calm you sound.
-                </li>
-                <li>
-                  <strong>It uses your own stuff:</strong> Add a deck and Miles asks about the weak parts.
-                </li>
-              </ul>
-            </div>
+          <div className="section-index-badge"><span className="badge-dot" /><span>CHOOSE YOUR CONVERSATION</span></div>
+          <h2 className="section-headline">A practice room for every difficult conversation.</h2>
+          <p className="section-lead">Pick what you are preparing for. Adjust the pressure before you start.</p>
+          <div className="practice-scenario-grid">
+            {scenarios.map((scenario) => (
+              <button type="button" className="practice-scenario-card" key={scenario.id} onClick={() => onStartDebate(scenario.id)}>
+                <span className="practice-scenario-tag">{scenario.tag}</span>
+                <h3>{scenario.label}</h3>
+                <p>{scenario.topic}</p>
+                <span className="practice-scenario-action">Practice this scenario <ArrowRight size={15} /></span>
+              </button>
+            ))}
           </div>
         </div>
       </section>
 
-      {/* =========================================================================
-          SECTION / 02 — ADVERSARIAL CAPABILITIES (Interactive Bento Grid)
-          ========================================================================= */}
       <section className="marketing-section section-dark-bento reveal-on-scroll" id="capabilities">
         <div className="section-container">
-          <div className="section-index-badge">
-            <span className="badge-dot" />
-            <span>/ 02 — WHAT IT DOES</span>
-          </div>
-
-          <h2 className="section-headline">
-            It is basically a gym for hard conversations.
-          </h2>
-          <p className="section-lead">
-            You pick the room. Miles plays the hard person in that room.
-            You talk. It pushes back. Then you see what needs work.
-          </p>
-
-          <div className="bento-grid">
-            {/* CARD 1: Barge-in & Interruption */}
-            <SpotlightCard className="bento-card bento-card-large reveal-on-scroll" spotlightColor="rgba(198, 244, 50, 0.12)">
-              <div className="bento-card-icon-box">
-                <Zap size={22} className="bento-icon" />
-                <span className="bento-tech-tag">Fast voice mode</span>
-              </div>
-              <div className="signal-radar" aria-hidden="true">
-                <span className="radar-core" />
-                <span className="radar-ring ring-one" />
-                <span className="radar-ring ring-two" />
-                <span className="radar-pulse" />
-              </div>
-              <h3 className="bento-card-title">It interrupts you fast</h3>
-              <p className="bento-card-desc">
-                Real people do not always wait their turn. Miles can cut in when you stall,
-                and it can stop talking when you jump in. Very rude, very useful.
-              </p>
-              <div className="bento-latency-meter">
-                <div className="meter-label">
-                  <span>Cut-in speed</span>
-                  <span className="meter-val">very fast</span>
-                </div>
-                <div className="meter-bar-track">
-                  <div className="meter-bar-fill" style={{ width: "24%" }} />
-                </div>
-              </div>
-            </SpotlightCard>
-
-            {/* CARD 2: Composure & Cadence HUD */}
-            <SpotlightCard className="bento-card reveal-on-scroll" spotlightColor="rgba(198, 244, 50, 0.12)">
-              <div className="bento-card-icon-box">
-                <Gauge size={22} className="bento-icon" />
-                <span className="bento-tech-tag">Calm check</span>
-              </div>
-              <h3 className="bento-card-title">It notices when you sound shaky</h3>
-              <p className="bento-card-desc">
-                Miles listens for speed, long pauses, and filler words like "um," "uh," "like,"
-                and "basically." No shame. Just data.
-              </p>
-              <div className="bento-hud-preview">
-                <div className="hud-pill">
-                  <span className="hud-metric"><CountUp to={100} duration={1.2} /></span>
-                  <span className="hud-lbl">Calm</span>
-                </div>
-                <div className="hud-pill">
-                  <span className="hud-metric"><CountUp to={142} duration={1.2} /></span>
-                  <span className="hud-lbl">Words per min</span>
-                </div>
-                <div className="hud-pill">
-                  <span className="hud-metric"><CountUp to={0} duration={1.2} /></span>
-                  <span className="hud-lbl">Filler words</span>
-                </div>
-              </div>
-              <div className="composure-wave" aria-hidden="true">
-                <span />
-                <span />
-                <span />
-                <span />
-                <span />
-                <span />
-              </div>
-            </SpotlightCard>
-
-            {/* CARD 3: Anti-Sycophancy Policy */}
-            <SpotlightCard className="bento-card reveal-on-scroll" spotlightColor="rgba(198, 244, 50, 0.12)">
-              <div className="bento-card-icon-box">
-                <Target size={22} className="bento-icon" />
-                <span className="bento-tech-tag">No sugarcoating</span>
-              </div>
-              <h3 className="bento-card-title">It won't pretend a weak answer worked</h3>
-              <p className="bento-card-desc">
-                If your point is weak, Miles says so. Not to be mean.
-                To help you fix it before someone important says it worse.
-              </p>
-              <div className="policy-stack" aria-hidden="true">
-                <span>ask why</span>
-                <span>ask for proof</span>
-                <span>stop the dodge</span>
-              </div>
-            </SpotlightCard>
-
-            {/* CARD 4: Document Weaponization */}
-            <SpotlightCard className="bento-card reveal-on-scroll" spotlightColor="rgba(198, 244, 50, 0.12)">
-              <div className="bento-card-icon-box">
-                <FileText size={22} className="bento-icon" />
-                <span className="bento-tech-tag">Use your real data</span>
-              </div>
-              <h3 className="bento-card-title">Upload your deck and test it under real pressure</h3>
-              <p className="bento-card-desc">
-                Add a pitch deck, contract, or notes. Miles uses your own words and numbers
-                to ask better questions. Painful, but useful.
-              </p>
-              <div className="doc-scan" aria-hidden="true">
-                <span />
-                <span />
-                <span />
-              </div>
-            </SpotlightCard>
-
-            {/* CARD 5: Multi-Agent Boardroom Panel */}
-            <SpotlightCard className="bento-card reveal-on-scroll" spotlightColor="rgba(198, 244, 50, 0.12)">
-              <div className="bento-card-icon-box">
-                <Users size={22} className="bento-icon" />
-                <span className="bento-tech-tag">Two-on-one</span>
-              </div>
-              <h3 className="bento-card-title">Two people can pressure you at once</h3>
-              <p className="bento-card-desc">
-                One sounds helpful. One is not buying it at all.
-                You learn how to stay clear when the room gets weird.
-              </p>
-              <div className="panel-orbit" aria-hidden="true">
-                <span>VC</span>
-                <span>GC</span>
-                <span>YOU</span>
-              </div>
-            </SpotlightCard>
-
-            {/* CARD 6: Executive Debrief PDF */}
-            <SpotlightCard className="bento-card reveal-on-scroll" spotlightColor="rgba(198, 244, 50, 0.12)">
-              <div className="bento-card-icon-box">
-                <Sparkles size={22} className="bento-icon" />
-                <span className="bento-tech-tag">After-round notes</span>
-              </div>
-              <h3 className="bento-card-title">You get a simple debrief after</h3>
-              <p className="bento-card-desc">
-                See where you got vague, where you rushed, and what to say better next time.
-                No mystery. Just the fix list.
-              </p>
-              <div className="debrief-preview" aria-hidden="true">
-                <CheckCircle2 size={15} />
-                <span>3 practice drills ready</span>
-              </div>
-            </SpotlightCard>
+          <div className="section-index-badge"><span className="badge-dot" /><span>WHAT MILES HELPS YOU DO</span></div>
+          <h2 className="section-headline">Turn a rehearsed answer into a clear conversation.</h2>
+          <div className="practice-benefits">
+            {[
+              { icon: Zap, title: "Handle real pushback", text: "Miles questions your assumptions, asks for evidence, and follows up when an answer is vague. You can interrupt and respond naturally." },
+              { icon: Gauge, title: "Understand your delivery", text: "Review your pace, filler words, and moments of hesitation alongside feedback on your answers." },
+              { icon: FileText, title: "Practice with your own material", text: "Add a pitch deck as PDF, a document, or notes. Miles uses your context to challenge your claims and numbers." },
+              { icon: Target, title: "Leave with a next step", text: "See strengths, weak answers, and suggested improvements in your report. Retry an answer and download your feedback as PDF." },
+            ].map(({ icon: Icon, title, text }) => (
+              <article className="practice-benefit" key={title}><Icon size={23} /><h3>{title}</h3><p>{text}</p></article>
+            ))}
           </div>
         </div>
       </section>
 
-      {/* =========================================================================
-          SECTION / 03 — HOW IT WORKS (4-Step Numerical Sequence)
-          ========================================================================= */}
       <section className="marketing-section section-dark reveal-on-scroll" id="how-it-works">
         <div className="section-container">
-          <div className="section-index-badge">
-            <span className="badge-dot" />
-            <span>/ 03 — HOW IT WORKS</span>
-          </div>
-
-          <h2 className="section-headline">
-            Four steps. No complicated setup.
-          </h2>
-          <p className="section-lead">
-            This is not another chat box. You talk out loud, get challenged,
-            and leave with a clearer answer.
-          </p>
-
+          <div className="section-index-badge"><span className="badge-dot" /><span>HOW IT WORKS</span></div>
+          <h2 className="section-headline">From preparation to a useful report.</h2>
           <div className="steps-sequence-grid">
-            <div className="step-card reveal-on-scroll">
-              <div className="step-num">01</div>
-              <div className="step-header">Pick the room</div>
-              <p className="step-desc">
-                Choose a pitch, salary talk, interview, board meeting, legal question,
-                or write your own custom challenge.
-              </p>
-            </div>
-
-            <div className="step-card reveal-on-scroll">
-              <div className="step-num">02</div>
-              <div className="step-header">Choose the heat</div>
-              <p className="step-desc">
-                Keep it chill or make it brutal. Add a deck if you want Miles to use your real material.
-              </p>
-            </div>
-
-            <div className="step-card reveal-on-scroll">
-              <div className="step-num">03</div>
-              <div className="step-header">Talk under pressure</div>
-              <p className="step-desc">
-                Use your mic. Answer like it is the real meeting.
-                Miles pushes back when your answer gets soft.
-              </p>
-            </div>
-
-            <div className="step-card reveal-on-scroll">
-              <div className="step-num">04</div>
-              <div className="step-header">Read the fix list</div>
-              <p className="step-desc">
-                See what went well, what got messy, and what to practice next.
-                That is the whole point.
-              </p>
-            </div>
+            {[
+              ["Choose a scenario", "Pick a pitch, negotiation, interview, or another challenge. Set a difficulty that fits your practice."],
+              ["Add context if you want", "Upload a supported document or paste notes. Check your microphone, headphones, and voice connection."],
+              ["Practice out loud", "Miles plays the other side. Answer questions, handle objections, and keep the conversation clear."],
+              ["Get your feedback", "Finish the round to see what worked, what needs practice, and how to improve. Download your report."],
+            ].map(([title, text], index) => <article className="step-card" key={title}>
+              <div className="step-num">0{index + 1}</div><h3 className="step-header">{title}</h3><p className="step-desc">{text}</p>
+            </article>)}
           </div>
         </div>
       </section>
 
-      {/* =========================================================================
-          SECTION / 04 — AUDIO SIMULATION TEASER (Interactive Soundboard)
-          ========================================================================= */}
       <section className="marketing-section section-dark-bento reveal-on-scroll" id="audio-simulation">
         <div className="section-container">
-          <div className="section-index-badge">
-            <span className="badge-dot" />
-            <span>/ 04 — HEAR A PREVIEW</span>
+          <div className="section-index-badge"><span className="badge-dot" /><span>A LOOK INSIDE A ROUND</span></div>
+          <h2 className="section-headline">Practice the follow-up question, too.</h2>
+          <p className="section-lead">Illustrative examples below. Your live conversation responds to what you actually say.</p>
+          <div className="preview-scenario-tabs" aria-label="Example conversations">
+            {scenarios.map((scenario) => <button type="button" key={scenario.id}
+              aria-pressed={previewScenario === scenario.id} onClick={() => setPreviewScenario(scenario.id)}>{scenario.label}</button>)}
           </div>
-
-          <h2 className="section-headline">
-            Hear the kind of questions{" "}
-            <span className="heading-logo-word">
-              <img src="/miles_wordmark.png" alt="Miles" />
-            </span>{" "}
-            throws at you.
-          </h2>
-          <p className="section-lead">
-            These are sample prompts, not actual audio recordings. Click one and the card comes alive.
-          </p>
-
-          <div className="audio-samples-grid">
-            {/* Sample 1: Marcus Vance (VC) */}
-            <div className={`audio-sample-card reveal-on-scroll ${playingSample === "marcus" ? "is-playing" : ""}`}>
-              <div className="sample-card-top">
-                <div className="sample-avatar-box">
-                  <span className="sample-avatar-label">MV</span>
-                </div>
-                <div className="sample-meta">
-                  <span className="sample-name">Marcus Vance</span>
-                  <span className="sample-role">Investor who needs real answers</span>
-                </div>
-                <button
-                  type="button"
-                  className="sample-play-btn"
-                  onClick={() => toggleSample("marcus")}
-                  title={playingSample === "marcus" ? "Pause challenge" : "Listen to challenge"}
-                >
-                  {playingSample === "marcus" ? <Pause size={16} /> : <Play size={16} />}
-                </button>
-              </div>
-
-              <div className="sample-quote">
-                "Your growth looks expensive. Why would this not get copied by a bigger team with more money?"
-              </div>
-
-              <div className="sample-audio-bars">
-                <span className={`bar ${playingSample === "marcus" ? "active" : ""}`} />
-                <span className={`bar ${playingSample === "marcus" ? "active" : ""}`} />
-                <span className={`bar ${playingSample === "marcus" ? "active" : ""}`} />
-                <span className={`bar ${playingSample === "marcus" ? "active" : ""}`} />
-                <span className={`bar ${playingSample === "marcus" ? "active" : ""}`} />
-                <span className={`bar ${playingSample === "marcus" ? "active" : ""}`} />
-                <span className={`bar ${playingSample === "marcus" ? "active" : ""}`} />
-                <span className={`bar ${playingSample === "marcus" ? "active" : ""}`} />
-              </div>
+          <div className="conversation-preview reveal-on-scroll" aria-live="polite">
+            <div className="preview-conversation-label"><span>EXAMPLE CONVERSATION</span>
+              <div className="preview-wave" aria-hidden="true">{[0, 1, 2, 3, 4].map((index) => <span key={index} />)}</div>
             </div>
-
-            {/* Sample 2: Elena Rostova (Salary) */}
-            <div className={`audio-sample-card reveal-on-scroll ${playingSample === "elena" ? "is-playing" : ""}`}>
-              <div className="sample-card-top">
-                <div className="sample-avatar-box">
-                  <span className="sample-avatar-label">ER</span>
-                </div>
-                <div className="sample-meta">
-                  <span className="sample-name">Elena Rostova</span>
-                  <span className="sample-role">Hiring lead who demands real results, not hype</span>
-                </div>
-                <button
-                  type="button"
-                  className="sample-play-btn"
-                  onClick={() => toggleSample("elena")}
-                  title={playingSample === "elena" ? "Pause challenge" : "Listen to challenge"}
-                >
-                  {playingSample === "elena" ? <Pause size={16} /> : <Play size={16} />}
-                </button>
-              </div>
-
-              <div className="sample-quote">
-                "That salary ask is high. What did you actually do that makes this number make sense?"
-              </div>
-
-              <div className="sample-audio-bars">
-                <span className={`bar ${playingSample === "elena" ? "active" : ""}`} />
-                <span className={`bar ${playingSample === "elena" ? "active" : ""}`} />
-                <span className={`bar ${playingSample === "elena" ? "active" : ""}`} />
-                <span className={`bar ${playingSample === "elena" ? "active" : ""}`} />
-                <span className={`bar ${playingSample === "elena" ? "active" : ""}`} />
-                <span className={`bar ${playingSample === "elena" ? "active" : ""}`} />
-                <span className={`bar ${playingSample === "elena" ? "active" : ""}`} />
-                <span className={`bar ${playingSample === "elena" ? "active" : ""}`} />
-              </div>
-            </div>
+            <div className="preview-message"><strong>Miles</strong><p>{example.question}</p></div>
+            <div className="preview-message preview-message-user"><strong>You</strong><p>{example.answer}</p></div>
+            <div className="preview-feedback"><CheckCircle2 size={18} /><p>{example.feedback}</p></div>
           </div>
         </div>
       </section>
 
-      {/* =========================================================================
-          SECTION / 05 — READY TO SPAR CTA (High-Impact Action Box)
-          ========================================================================= */}
+      <section className="marketing-section section-dark reveal-on-scroll" id="sample-report">
+        <div className="section-container">
+          <div className="section-index-badge"><span className="badge-dot" /><span>AFTER YOUR ROUND</span></div>
+          <h2 className="section-headline">Know what to keep. Know what to change.</h2>
+          <p className="section-lead">Your report connects feedback to your spoken answers. Speech metrics come from the captured session; argument scores are AI assessments.</p>
+          <div className="sample-report-card">
+            <div className="sample-report-header"><FileText size={23} /><div><h3>Your practice report</h3><span>Illustrative preview · values below are examples</span></div></div>
+            <div className="sample-report-metrics">
+              <div><strong>142</strong><span>Words per minute</span></div><div><strong>4</strong><span>Filler words</span></div><div><strong>3</strong><span>Spoken answers</span></div>
+            </div>
+            <div className="sample-report-columns">
+              <div><h4>What worked</h4><p>You answered the question before explaining the background.</p></div>
+              <div><h4>What to improve</h4><p>Your claim about customer demand needs a specific example or number.</p></div>
+              <div><h4>Try next time</h4><p>Lead with your answer, give one piece of evidence, and stop there.</p></div>
+            </div>
+            <p className="sample-report-note"><ShieldCheck size={16} /> In-app feedback, PDF download, and a share link you choose to create.</p>
+          </div>
+        </div>
+      </section>
+
       <section className="marketing-section section-cta reveal-on-scroll">
         <div className="section-container cta-container">
-          <div className="cta-glow-spot" />
           <div className="cta-content-box">
-            <span className="cta-eyebrow">
-              <ShinyText text="READY TO STOP GUESSING?" speed={4} />
-            </span>
-            <h2 className="cta-title">
-              Stop rehearsing in the mirror.<br />
-              Let{" "}
-              <span className="heading-logo-word cta-logo-word">
-                <img src="/miles_wordmark.png" alt="Miles" />
-              </span>{" "}
-              press you a little.
-            </h2>
-            <p className="cta-subtitle">
-              Put on headphones, pick a room, and say the answer out loud.
-              You will know very quickly what needs work.
-            </p>
-
+            <h2 className="cta-title">Have the practice conversation first.</h2>
+            <p className="cta-subtitle">Pick your scenario, put on headphones, and give your answer out loud.</p>
             <div className="cta-action-row">
-              <button
-                  type="button"
-                  className="cta-primary-btn"
-                  onClick={() => onStartDebate()}
-                >
-                  <span>Start a round</span>
-                  <span className="cta-icon-island">
-                    <ArrowRight size={16} />
-                  </span>
-                </button>
-
-              <button
-                type="button"
-                className="cta-secondary-btn"
-                onClick={onOpenMeetModal}
-              >
-                <Video size={16} />
-                <span>Practice in Meet</span>
-              </button>
+              <button type="button" className="cta-primary-btn" onClick={chooseScenario}><span>Start practicing</span><ArrowRight size={17} /></button>
+              {GOOGLE_MEET_ENABLED && <button type="button" className="cta-secondary-btn" onClick={onOpenMeetModal}><Video size={16} /><span>Practice in Meet</span></button>}
             </div>
           </div>
         </div>
       </section>
 
-      {/* =========================================================================
-          MODERN MARKETING FOOTER
-          ========================================================================= */}
       <footer className="marketing-footer">
         <div className="footer-container">
           <div className="footer-top-row">
-            <div className="footer-brand-box">
-              <img
-                src="/miles_home_logo.png"
-                alt="Miles"
-                className="footer-brand-logo"
-              />
-              <p className="footer-brand-tagline">
-                Miles helps you practice hard conversations out loud before they happen for real.
-              </p>
-            </div>
-
+            <div className="footer-brand-box"><img src="/miles_home_logo.png" alt="Miles" className="footer-brand-logo" /><p className="footer-brand-tagline">An AI voice sparring partner for the conversations that matter.</p></div>
             <div className="footer-links-group">
-              <div className="footer-col">
-                <span className="footer-col-header">SCENARIOS</span>
-                <button type="button" onClick={() => onStartDebate("vc_pitch")}>Pitch practice</button>
-                <button type="button" onClick={() => onStartDebate("salary_negotiation")}>Salary talk</button>
-                <button type="button" onClick={() => onStartDebate("hostile_cross_exam")}>Hard questions</button>
-                <button type="button" onClick={() => onStartDebate("senior_interview")}>Job interview</button>
-              </div>
-
-              <div className="footer-col">
-                <span className="footer-col-header">EXPLORE</span>
-                <a href="#how-it-works">How it works</a>
-                <a href="#capabilities">What Miles does</a>
-                <a href="#audio-simulation">Sample questions</a>
-                <button type="button" onClick={onOpenPreflight}>Check audio</button>
-              </div>
-
-              <div className="footer-col">
-                <span className="footer-col-header">INTEGRATIONS</span>
-                <button type="button" onClick={onOpenMeetModal}>Google Meet mode</button>
-                <button type="button" onClick={onOpenContextModal}>Attach a deck</button>
-                <button type="button" onClick={() => onStartDebate("custom_debate")}>Custom topic</button>
-              </div>
+              <div className="footer-col"><span className="footer-col-header">PRACTICE</span><a href="#practice-scenarios">All scenarios</a><button type="button" onClick={onOpenPreflight}>Check audio</button><button type="button" onClick={onOpenContextModal}>Add a PDF or notes</button></div>
+              <div className="footer-col"><span className="footer-col-header">EXPLORE</span><a href="#how-it-works">How it works</a><a href="#audio-simulation">Example conversations</a><a href="#sample-report">Sample report</a>{GOOGLE_MEET_ENABLED && <button type="button" onClick={onOpenMeetModal}>Google Meet mode</button>}</div>
             </div>
           </div>
-
-          <div className="footer-bottom-row">
-            <div className="footer-tech-stack">
-              <span>BUILT WITH:</span>
-              <span className="tech-badge">Live speech</span>
-              <span className="tech-badge">Voice replies</span>
-              <span className="tech-badge">Fast web audio</span>
-            </div>
-
-            <div className="footer-copyright">
-              © {new Date().getFullYear()} Miles Voice AI. Practice the hard conversation before it practices on you.
-            </div>
-          </div>
+          <div className="footer-bottom-row"><div className="footer-tech-stack"><span>Speech recognition powered by AssemblyAI</span></div><div className="footer-copyright">Miles · Practice before it matters.</div></div>
         </div>
       </footer>
     </div>
   );
-};
+}

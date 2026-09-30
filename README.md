@@ -1,6 +1,6 @@
 # Miles
 
-Miles is a voice sparring app with a FastAPI backend and a React frontend. It runs a spoken debate, scores the conversation, and saves reports and meeting records locally.
+Miles helps people practice difficult conversations with an AI voice sparring partner: pitches, interviews, negotiations, sales objections, cross-examination, crisis communication, boardroom challenges, and custom topics. After practice, it provides feedback, a downloadable PDF, and optional explicit report sharing. The backend is FastAPI and the frontend is React.
 
 ## What is in the repository
 
@@ -11,10 +11,10 @@ Miles is a voice sparring app with a FastAPI backend and a React frontend. It ru
 
 ## Integrations
 
-- **Speech:** AssemblyAI streaming transcription and Rime streaming speech are optional. The app has local fallbacks when provider keys are not configured.
-- **Language models:** OpenAI, Gemini, and Anthropic are supported, with a local mock fallback.
+- **Speech:** Live voice practice requires AssemblyAI streaming transcription and Rime streaming speech. Missing or failed providers are shown as unavailable; production sessions do not silently use simulated speech.
+- **Language models:** OpenAI, Gemini, and Anthropic are supported. Live practice requires a configured provider. Explicit mock providers remain available to deterministic tests. If report evaluation fails, feedback is labelled as rule-based and argument quality remains unscored.
 - **Google Drive:** imports context documents and can export debriefs when Google credentials are configured.
-- **Google Calendar / Meet:** provisions calendar events and meeting links when Google credentials are configured.
+- **Google Calendar / Meet:** preserved but disabled by default for the hackathon release. Enable both backend `GOOGLE_MEET_ENABLED=true` and frontend `VITE_GOOGLE_MEET_ENABLED=true`, then rebuild, to restore the UI and bridge build. Disabled creation, launch, calendar-consent, and audio-bridge paths reject requests before external actions; existing bot lifecycle cleanup remains available.
 - **Recall.ai:** creates and schedules cloud bots, streams meeting audio through Recall Output Media into Miles' AssemblyAI/LLM/Rime loop, and tracks lifecycle state through signed webhooks. Live setup is documented in [`Application/docs/meeting-bot.md`](Application/docs/meeting-bot.md). Local development may still use an explicit mock provider.
 
 Live integrations need their provider credentials in `Application/.env`; start from `Application/.env.example`. Never commit `.env` files.
@@ -56,11 +56,20 @@ Build the frontend from `Application/frontend/`:
 npm run build
 ```
 
-The optional provider smoke check calls AssemblyAI and Rime and may use provider quota. Run it only when intended:
+The optional provider smoke check calls AssemblyAI, Rime, and the configured language model and may use provider quota. Run it only when intended:
 
 ```powershell
 python scripts/provider_smoke_check.py --live
 ```
+
+Frontend markup tests run with `npm run test` in `Application/frontend/`. These do not replace browser checks. The opt-in synthetic-speech check covers all eight scenarios and one context-backed pitch, including live transcription, opponent response, speech output, and report/PDF generation:
+
+```powershell
+python scripts/verify_demo_flow.py --live
+python scripts/verify_demo_flow.py --live --scenario vc_pitch --turns 3 --output data/demo-full-round-results.json
+```
+
+See [the examiner guide](EXAMINER_GUIDE.md) for the intended demo path and [release verification](Application/docs/hackathon-release-verification-2026-09-30.md) for current evidence and remaining deployment checks.
 
 `python benchmark_interruption.py --live` also streams speech through the configured TTS provider. It measures simulated server-side cancellation response only. It does not measure microphone detection, browser playback buffers, or end-to-end audible cutoff; see [`Application/RIME_EVIDENCE.md`](Application/RIME_EVIDENCE.md).
 

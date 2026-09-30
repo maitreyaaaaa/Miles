@@ -178,6 +178,7 @@ export type DebateReportEvent = {
   assessment_status?: "complete" | "limited_data" | "insufficient_data";
   assessment_method?: "ai" | "heuristic" | "none";
   assessment_note?: string;
+  persistence_status?: "saved" | "temporary";
   key_weaknesses: string[];
   coaching_tips: string[];
   chapters?: DebateChapter[];
@@ -288,14 +289,14 @@ export type SpeechIntelligenceEvent = {
   user_pct: number;
   ai_pct: number;
   micro_hesitations?: MicroHesitation[];
-  confidence_mean?: number;
+  confidence_mean?: number | null;
   stress_indicator?: string;
 };
 
 export type TurnTelemetryEvent = {
   type: "turn_telemetry";
   ttfa_ms: number;
-  barge_in_latency_ms: number;
+  barge_in_latency_ms: number | null;
   stt_provider: string;
   tts_provider: string;
   llm_provider: string;
@@ -320,6 +321,8 @@ export type FactAuditUpdateEvent = {
 };
 
 export type ServerEvent =
+  | { type: "session_ready"; session_id: string }
+  | { type: "session_error"; message: string; recoverable: boolean }
   | TranscriptEvent
   | InterruptionEvent
   | TelemetryEvent
@@ -343,6 +346,8 @@ export type TranscriptLine = TranscriptEvent & {
 };
 
 export type PreflightResponse = {
+  voice_ready: boolean;
+  llm_status: string;
   backend_status: string;
   assemblyai_status: string;
   assemblyai_model: string;

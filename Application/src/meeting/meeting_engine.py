@@ -31,7 +31,7 @@ class MeetingEngineCoordinator:
     ):
         self.session = session
         self.bot_provider = bot_provider or get_default_meeting_provider()
-        self.tts_client = tts_client or RimeStreamingTTSClient()
+        self.tts_client = tts_client or RimeStreamingTTSClient(allow_fallback=self.bot_provider.provider_mode == "mock")
         self.stt_client = stt_client
         if self.stt_client is None and config.assemblyai_api_key:
             self.stt_client = AssemblyAIStreamingClient(

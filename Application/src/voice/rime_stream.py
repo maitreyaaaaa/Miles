@@ -10,6 +10,7 @@ from typing import AsyncIterator, Callable, Optional
 import httpx
 
 from src.config import config
+from src.voice.errors import VoiceProviderError
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +45,7 @@ class RimeStreamingTTSClient:
         sample_rate: int = 22050,
         on_playback_start: Optional[Callable[[], None]] = None,
         on_playback_end: Optional[Callable[[], None]] = None,
+        allow_fallback: bool = False,
     ):
         self.api_key = api_key or config.rime_api_key
         self.speaker = speaker or config.rime_speaker
@@ -51,6 +53,7 @@ class RimeStreamingTTSClient:
         self.sample_rate = sample_rate
         self.on_playback_start = on_playback_start
         self.on_playback_end = on_playback_end
+        self.allow_fallback = allow_fallback
 
         self.active_provider = "Rime" if self.api_key else "System Fallback"
         self._is_cancelled = False
@@ -113,6 +116,8 @@ class RimeStreamingTTSClient:
                         break
                     yield chunk
             else:
+                if not self.allow_fallback:
+                    raise VoiceProviderError("Voice output is unavailable. Please try again later.")
                 async for chunk in self._stream_fallback(text):
                     if self._is_cancelled or self._cancel_event.is_set():
                         break
@@ -207,9 +212,8 @@ class RimeStreamingTTSClient:
                         if alt_resp.status_code != 200:
                             alt_err = await alt_resp.aread()
                             logger.error(f"[RimeTTS] Retry failed {alt_resp.status_code}: {alt_err.decode(errors='ignore')}")
-                            async for fallback_chunk in self._stream_fallback(text):
-                                yield fallback_chunk
-                            return
+                            raise VoiceProviderError("Voice output is unavailable. Please try again later.")
+                        self.active_provider = f"Rime ({alt_model}, {alt_speaker})"
                         async for chunk in alt_resp.aiter_bytes(chunk_size=2048):
                             if self._is_cancelled or self._cancel_event.is_set():
                                 break
@@ -219,9 +223,7 @@ class RimeStreamingTTSClient:
                 elif resp.status_code != 200:
                     err_body = await resp.aread()
                     logger.error(f"Rime API error {resp.status_code}: {err_body.decode(errors='ignore')}")
-                    async for fallback_chunk in self._stream_fallback(text):
-                        yield fallback_chunk
-                    return
+                    raise VoiceProviderError("Voice output is unavailable. Please try again later.")
 
                 async for chunk in resp.aiter_bytes(chunk_size=2048):
                     if self._is_cancelled or self._cancel_event.is_set():
@@ -229,9 +231,12 @@ class RimeStreamingTTSClient:
                         break
                     yield chunk
 
-        except (httpx.RequestError, httpx.HTTPError, RuntimeError, Exception) as e:
+        except Exception as e:
             if not self._is_cancelled and not self._cancel_event.is_set():
-                logger.error(f"Rime network stream error: {e}. Yielding fallback.")
+                logger.error("Rime speech request failed (%s).", type(e).__name__)
+                if not self.allow_fallback:
+                    raise VoiceProviderError("Voice output is unavailable. Please try again later.") from None
+                self.active_provider = "Local test fallback"
                 async for fallback_chunk in self._stream_fallback(text):
                     yield fallback_chunk
 

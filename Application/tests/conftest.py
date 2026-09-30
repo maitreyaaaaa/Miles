@@ -9,6 +9,11 @@ import pytest
 _TEST_DATA_DIR = Path(tempfile.gettempdir()) / f"miles-pytest-{os.getpid()}"
 _TEST_DATA_DIR.mkdir(parents=True, exist_ok=True)
 os.environ["MILES_DATA_DIR"] = str(_TEST_DATA_DIR)
+# Retained meeting integration tests exercise the opt-in feature. Disabled-mode
+# tests override server.config explicitly; normal deployments default to off.
+os.environ["GOOGLE_MEET_ENABLED"] = "true"
+for _provider_key in ("ASSEMBLYAI_API_KEY", "RIME_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "ANTHROPIC_API_KEY"):
+    os.environ[_provider_key] = ""
 
 
 @pytest.fixture(autouse=True)

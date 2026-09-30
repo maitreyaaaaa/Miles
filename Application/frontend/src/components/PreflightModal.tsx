@@ -1,6 +1,8 @@
 import React, { useEffect, useRef, useState } from "react";
 import { CheckCircle2, Mic, Play, ShieldCheck, Volume2, X } from "lucide-react";
 import { useAccessibleDialog } from "../hooks/useAccessibleDialog";
+import { apiFetch, BACKEND_URL } from "../api";
+import type { PreflightResponse } from "../types";
 
 interface PreflightModalProps {
   isOpen: boolean;
@@ -9,11 +11,37 @@ interface PreflightModalProps {
   backendUrl?: string;
 }
 
-export const PreflightModal: React.FC<PreflightModalProps> = ({ isOpen, onClose, onConfirm }) => {
+export const PreflightModal: React.FC<PreflightModalProps> = ({ isOpen, onClose, onConfirm, backendUrl = BACKEND_URL }) => {
   const [micActive, setMicActive] = useState(false);
   const [micLevel, setMicLevel] = useState(0);
   const [speakerTested, setSpeakerTested] = useState(false);
   const [micError, setMicError] = useState<string | null>(null);
+  const [services, setServices] = useState<"checking" | "ready" | "unavailable">("checking");
+  const [serviceAttempt, setServiceAttempt] = useState(0);
+  const [serviceError, setServiceError] = useState("");
+  useEffect(() => {
+    if (!isOpen) return;
+    const controller = new AbortController();
+    let active = true;
+    const timer = window.setTimeout(() => controller.abort(), 16_000);
+    setServices("checking");
+    setServiceError("");
+    void (async () => {
+      try {
+        const response = await apiFetch(`${backendUrl}/api/preflight`, { signal: controller.signal });
+        if (!response.ok) throw new Error("Voice setup could not be checked. Please try again.");
+        const data = await response.json() as PreflightResponse;
+        if (!data.voice_ready) throw new Error("Voice practice is temporarily unavailable. Please try again shortly.");
+        if (active) setServices("ready");
+      } catch (error) {
+        if (active) {
+          setServices("unavailable");
+          setServiceError(controller.signal.aborted ? "Voice setup took too long. Check your connection and retry." : error instanceof Error ? error.message : "Voice setup failed.");
+        }
+      } finally { window.clearTimeout(timer); }
+    })();
+    return () => { active = false; controller.abort(); window.clearTimeout(timer); };
+  }, [isOpen, backendUrl, serviceAttempt]);
 
   const audioCtxRef = useRef<AudioContext | null>(null);
   const chimeCtxRef = useRef<AudioContext | null>(null);
@@ -43,6 +71,7 @@ export const PreflightModal: React.FC<PreflightModalProps> = ({ isOpen, onClose,
         streamRef.current = stream;
         const ctx = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
         audioCtxRef.current = ctx;
+        void ctx.resume().catch(() => setMicError("Click the audio setup controls to enable your microphone in this browser."));
         const source = ctx.createMediaStreamSource(stream);
         const analyser = ctx.createAnalyser();
         analyser.fftSize = 256;
@@ -87,6 +116,8 @@ export const PreflightModal: React.FC<PreflightModalProps> = ({ isOpen, onClose,
 
   const playChime = () => {
     try {
+      // Resume microphone analysis in this user gesture for stricter autoplay policies.
+      void audioCtxRef.current?.resume().catch(() => setMicError("Your microphone could not be enabled. Check browser audio permissions."));
       if (chimeCtxRef.current && chimeCtxRef.current.state !== "closed") {
         chimeCtxRef.current.close().catch(() => {});
         chimeCtxRef.current = null;
@@ -128,7 +159,7 @@ export const PreflightModal: React.FC<PreflightModalProps> = ({ isOpen, onClose,
   };
 
   const handlePassAndClose = () => {
-    sessionStorage.setItem("miles_preflight_passed", "true");
+    if (!micActive || !speakerTested || services !== "ready") return;
     if (onConfirm) {
       onConfirm();
     } else {
@@ -156,7 +187,7 @@ export const PreflightModal: React.FC<PreflightModalProps> = ({ isOpen, onClose,
             </div>
             <div className="preflight-titles">
               <h2 id="preflight-title">Audio &amp; Voice Setup</h2>
-              <p>Calibrate microphone input &amp; verify audio playback</p>
+              <p>Check your microphone, headphones, and voice connection</p>
             </div>
           </div>
           <button
@@ -171,6 +202,16 @@ export const PreflightModal: React.FC<PreflightModalProps> = ({ isOpen, onClose,
         </div>
 
         <div className="preflight-body">
+          <div className="preflight-check-card" aria-live="polite">
+            <div className="preflight-row">
+              <div className="preflight-item-left"><ShieldCheck size={18} /><div>
+                <div className="preflight-item-label">Voice connection</div>
+                <div className="preflight-item-sub">{services === "checking" ? "Checking speech, voice, and conversation services…" : services === "ready" ? "Ready for your round" : "Connection needs attention"}</div>
+              </div></div>
+              {services === "unavailable" && <button type="button" className="preflight-action-pill" onClick={() => setServiceAttempt((value) => value + 1)}>Retry</button>}
+            </div>
+            {serviceError && <p className="session-error-banner" role="alert">{serviceError}</p>}
+          </div>
           {/* Microphone Check */}
           <div className="preflight-check-card">
             <div className="preflight-row">
@@ -226,17 +267,18 @@ export const PreflightModal: React.FC<PreflightModalProps> = ({ isOpen, onClose,
         <div className="preflight-footer">
           <button
             type="button"
-            onClick={handlePassAndClose}
+            onClick={onClose}
             className="preflight-skip-btn"
           >
-            Skip Setup
+            Cancel
           </button>
           <button
             type="button"
             onClick={handlePassAndClose}
             className="preflight-submit-btn"
+            disabled={!micActive || !speakerTested || services !== "ready"}
           >
-            <CheckCircle2 size={16} /> Enter Sparring
+            <CheckCircle2 size={16} /> Start practice
           </button>
         </div>
       </div>
