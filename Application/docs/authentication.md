@@ -1,15 +1,15 @@
 # Authentication setup
 
-Miles delegates sign-in and email-code delivery to Supabase Auth. The browser uses Supabase's public publishable key. The FastAPI server accepts only Supabase user access tokens and verifies their signature using the project's JWKS endpoint. It never receives a service-role key.
+Miles uses Google sign-in through Supabase Auth. Email sign-in is disabled for the hackathon release. The browser uses Supabase's public publishable key. The FastAPI server accepts only Supabase user access tokens and verifies their signature using the project's JWKS endpoint. It never receives a service-role key.
 
 ## Supabase project
 
 1. Create a Supabase project and configure the Google provider with a Google OAuth web client. Add Supabase's displayed callback URL to the Google client's authorized redirect URIs.
-2. In Supabase Auth URL configuration, allow only the Google and Email providers and add the exact frontend callbacks: `http://localhost:5173/auth/callback` and `https://your-frontend.example.com/auth/callback`.
-3. Enable email sign-in and change the email sign-in template to show `{{ .Token }}` so users receive the six-digit OTP rather than a magic link. Set a short code lifetime (10 minutes or less) and retain Supabase's resend and abuse controls.
+2. In Supabase Auth URL configuration, set the production Site URL and add the exact frontend callbacks: `http://localhost:5173/auth/callback` and `https://your-frontend.example.com/auth/callback`.
+3. Enable the Google provider with the web client ID and secret. Disable the Email provider. Retain Supabase's signup, session, and abuse controls. The Google client's authorized redirect URI must be `https://your-project.supabase.co/auth/v1/callback`, which differs from the frontend callback.
 4. Use an asymmetric JWT signing key so Supabase publishes verification keys at `/auth/v1/.well-known/jwks.json`. The API rejects shared-secret signing algorithms.
 
-Supabase documents the OTP flow as `signInWithOtp` followed by `verifyOtp` with type `email`; its default email template sends a link until it is changed to include the token. See [passwordless email sign-in](https://supabase.com/docs/guides/auth/auth-email-passwordless). The API verifies issuer, audience, expiration, role, subject, and signature using Supabase's public JWKS, as described in [Supabase JWT verification](https://supabase.com/docs/guides/auth/jwts).
+The frontend starts `signInWithOAuth` with provider `google` and exchanges the returned authorization code on `/auth/callback` using PKCE. See [Supabase Google sign-in](https://supabase.com/docs/guides/auth/social-login/auth-google). The API verifies issuer, audience, expiration, role, subject, and signature using Supabase's public JWKS, as described in [Supabase JWT verification](https://supabase.com/docs/guides/auth/jwts).
 
 ## Environment
 

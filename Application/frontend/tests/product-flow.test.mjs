@@ -4,7 +4,7 @@ import { createServer } from "vite";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
-let vite, Landing, scenarios, intent, AppRoot, AuthProvider;
+let vite, Landing, scenarios, intent, AppRoot, AuthProvider, AuthScreen;
 const callbacks = {
   onStartDebate() {}, onOpenContextModal() {}, onOpenPreflight() {}, onOpenMeetModal() {},
 };
@@ -18,6 +18,7 @@ before(async () => {
   intent = await vite.ssrLoadModule("/src/practiceIntent.ts");
   AppRoot = (await vite.ssrLoadModule("/src/AppRoot.tsx")).AppRoot;
   AuthProvider = (await vite.ssrLoadModule("/src/auth/AuthContext.tsx")).AuthProvider;
+  AuthScreen = (await vite.ssrLoadModule("/src/components/AuthScreen.tsx")).AuthScreen;
 });
 after(async () => { await vite?.close(); });
 
@@ -71,6 +72,18 @@ test("scenario and custom-topic choices survive the sign-in redirect", () => {
   assert.deepEqual(intent.readPracticeIntent(), { scenario: "custom_debate", topic: "Defend our pricing", action: "practice" });
   intent.clearPracticeIntent();
   assert.equal(intent.readPracticeIntent(), null);
+});
+
+test("sign-in offers only Google and preserves error feedback", () => {
+  const html = renderToStaticMarkup(React.createElement(AuthScreen, {
+    configured: true, initialError: "Google sign-in could not start. Please try again.",
+  }));
+  assert.ok(html.includes("Continue with Google"));
+  assert.ok(!html.includes('id="auth-email"'));
+  assert.ok(!html.includes('id="auth-code"'));
+  assert.ok(!html.includes("or use email"));
+  assert.ok(!html.includes("Email me a code"));
+  assert.ok(html.includes('role="alert"'));
 });
 
 test("corrupted or obsolete saved practice choices do not break the public page", () => {

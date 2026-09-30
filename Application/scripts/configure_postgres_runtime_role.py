@@ -19,12 +19,21 @@ def main() -> int:
         print("MILES_RUNTIME_DB_PASSWORD must contain at least 32 characters.")
         return 2
 
-    statement = sql.SQL(
-        "ALTER ROLE miles_runtime WITH LOGIN NOSUPERUSER NOCREATEDB "
-        "NOCREATEROLE NOREPLICATION NOBYPASSRLS NOINHERIT PASSWORD {}"
-    ).format(sql.Literal(runtime_password))
+    # Supabase's postgres operator is not a superuser. Repeating NOSUPERUSER
+    # or NOBYPASSRLS in ALTER ROLE fails even when the role already has those
+    # restrictions. Verify the migration-created role, then change only login.
+    statement = sql.SQL("ALTER ROLE miles_runtime WITH LOGIN PASSWORD {}").format(
+        sql.Literal(runtime_password)
+    )
     try:
         with psycopg.connect(migration_url, connect_timeout=10) as connection:
+            role = connection.execute(
+                "SELECT rolsuper, rolcreatedb, rolcreaterole, rolreplication, "
+                "rolbypassrls, rolinherit FROM pg_roles WHERE rolname = 'miles_runtime'"
+            ).fetchone()
+            if role is None or any(role):
+                print("Miles runtime role is missing or has unsafe privileges. Apply or repair the reviewed migration first.")
+                return 1
             connection.execute(statement)
             connection.execute("GRANT anon, authenticated TO miles_runtime")
     except Exception:
