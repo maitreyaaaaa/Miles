@@ -5,7 +5,7 @@ Miles is an AI voice sparring partner for practicing difficult conversations bef
 ## Demo path
 
 1. Open the public landing page. It explains practice, pressure, feedback, and the final report. Landing conversations and report values are clearly labelled examples.
-2. Choose any scenario. For a custom debate, enter a topic. Sign in with Google or an email code through the configured Supabase project. The chosen scenario and topic survive the sign-in callback.
+2. Choose any scenario. For a custom debate, enter a topic. Sign in with Google through the configured Supabase project. Email-code sign-in is not enabled in this release. The chosen scenario and topic survive the sign-in callback.
 3. Optionally upload context such as a pitch-deck PDF or notes. File selection itself does not start a session.
 4. Complete audio setup: allow the microphone, speak until the input indicator responds, play the speaker test and confirm it was heard. Live transcription, speech, and model checks must pass before Start is available.
 5. Begin practice. Miles waits for the speech services to be ready before showing the live session. Speak at least three answers to obtain a fuller assessment. You can interrupt the opponent; browser and device conditions affect audible cutoff.
